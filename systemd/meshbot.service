@@ -1,0 +1,15 @@
+[Unit]
+Description=Groq AI Mesh Chatbot
+After=network.target
+
+[Service]
+Environment=PYTHONPATH=/home/YOUR_USER/RaspyMeshBot2.0
+ExecStart=/usr/bin/python3 /home/YOUR_USER/RaspyMeshBot2.0/mesh_groq_ai_bot_oled.py
+WorkingDirectory=/home/YOUR_USER/RaspyMeshBot2.0
+StandardOutput=append:/home/YOUR_USER/RaspyMeshBot2.0/meshbot.log
+StandardError=append:/home/YOUR_USER/RaspyMeshBot2.0/meshbot.log
+Restart=always
+User=YOUR_USER
+
+[Install]
+WantedBy=multi-user.target
