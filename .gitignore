@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Config with real API key — copy config.example.json → config.json and fill in your key
+config.json
+
+# Runtime files
+meshbot.log
+/tmp/meshbot_screensaver
+
+# Backup files
+*.bak
+
+# OS
+.DS_Store

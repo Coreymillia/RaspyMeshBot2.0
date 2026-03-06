@@ -1,0 +1,8 @@
+# Dependencies for RaspyMeshBot 2.0
+# Install with: pip install -r requirements.txt
+
+meshtastic
+requests
+Pillow
+RPi.GPIO
+pubsub
