@@ -21,7 +21,7 @@ Boot the Pi, pick your mode on the screen with a button press, and go.
 |-----|------|-------------|
 | KEY1 | **MeshBot** | AI chatbot with live status screen on the LCD |
 | KEY2 | **RaspyJack** | Security toolkit (separate install — see below) |
-| KEY3 | **MeshBot + Matrix Rain** | Full AI chatbot with matrix rain screensaver on the LCD |
+| KEY3 | **MeshBot + Pi.Alert Monitor** | Full AI chatbot + Pi.Alert network dashboard + idle matrix rain screensaver |
 
 The boot selector times out after **7 seconds** and defaults to MeshBot automatically.
 
@@ -39,10 +39,67 @@ The boot selector times out after **7 seconds** and defaults to MeshBot automati
 
 There are **28 unique canned replies** so responses are not repetitive.
 
-**LCD display (KEY1/KEY3 modes):**
-- KEY1 shows a live status screen: node ID, peer count, DM count, last sender, time since last message, message preview, AI status
-- KEY3 shows matrix rain animation. When a message arrives the screensaver pauses, the reply is shown on screen for 30 seconds, then the screensaver resumes
-- KEY3 on the status/screensaver screen toggles the backlight
+**LCD display (KEY1 mode):**
+- Shows a live status screen: node ID, peer count, DM count, last sender, time since last message, message preview, AI status
+- KEY3 toggles the backlight
+
+**LCD display (KEY3 mode — Pi.Alert Monitor):**
+
+See [Mode 3: Pi.Alert Monitor](#mode-3-pialert-monitor) below.
+
+---
+
+## Mode 3: Pi.Alert Monitor
+
+KEY3 launches a combined AI chatbot + live network security dashboard. The MeshBot runs in the background exactly as normal while the LCD shows data pulled from your [Pi.Alert](https://github.com/jokob-sk/Pi.Alert) instance.
+
+### What's on the display
+
+Five views cycle with **KEY1**. A row of five dots in the top-right corner shows which view is active.
+
+| View | Content |
+|------|---------|
+| 0 — Dashboard | Scan time, total/online/new/down/offline device counts |
+| 1 — Online | Live list of online devices with last IP |
+| 2 — New | Recently-seen new devices with first-seen timestamp |
+| 3 — ARP Alerts | MAC-change events (red header when alerts exist) |
+| 4 — Shady WiFi | Suspicious access points with security score |
+
+### Buttons in Mode 3
+
+| Button | Pin | Action |
+|--------|-----|--------|
+| KEY1 | BCM 21 | Cycle to next Pi.Alert view |
+| KEY2 | BCM 20 | Wake display from screensaver |
+| KEY3 | BCM 16 | Toggle backlight |
+
+### Screensaver
+
+After **5 minutes of inactivity** (no button presses, no incoming mesh messages, no new anomalies) the matrix rain screensaver activates automatically. Press **KEY2** to wake back to the Pi.Alert dashboard.
+
+### Anomaly alerter
+
+The bot watches the Pi.Alert feed every 60 seconds and applies four detection rules:
+
+| Rule | Trigger | Recency filter |
+|------|---------|----------------|
+| ARP alert | MAC address changed on a known IP | Last 24 hours |
+| New device | Device first seen on the network | Last 24 hours |
+| Device down | Known device stopped responding | Any |
+| Shady WiFi | Access point with score ≥ 20 | Any |
+
+When an anomaly is detected the bot:
+1. Wakes the display and switches to the relevant view
+2. Shows a red alert screen for 20 seconds
+3. Sends a **private DM** to node `!edac358a` over the mesh
+
+Anomalies are deduplicated across reboots via `.seen_anomalies.json` so the same event will never generate a second alert unless it reappears after 48 hours.
+
+### Pi.Alert requirements
+
+- A running Pi.Alert instance accessible at `http://192.168.0.105/`
+- The Pi.Alert API key configured in `PIALERT_API_KEY` near the top of `mesh_groq_ai_bot_oled.py`
+- The `pialert-patch/` directory in this repo contains the daemon scripts that extend Pi.Alert with ARP watching, WiFi scanning, and BLE scanning on the Pi.Alert host
 
 ---
 
@@ -57,13 +114,17 @@ There are **28 unique canned replies** so responses are not repetitive.
 
 ## ⚠️ Important: Radio Firmware Version
 
-**This project has only been tested with the Heltec Vision Master T190 running Meshtastic firmware 2.6.x.**
+**This project has only been tested with the Heltec Vision Master T190 running Meshtastic firmware 2.5.x (specifically 2.5.20).**
 
-### Why 2.6.x?
+### Why 2.5.x and not newer?
 
-The `meshtastic` Python library communicates with the radio over USB serial using Protobuf messages. Meshtastic's Python library is versioned to **match the firmware major version** — the library used here targets firmware 2.6. If you upgrade the radio to firmware 2.7+, the Protobuf definitions may not match and the serial connection can fail or time out, breaking the bot entirely.
+Starting with firmware **2.6.x**, Heltec appears to have dropped reliable USB serial support on the T190. The `meshtastic` Python library communicates with the radio over USB serial using Protobuf messages — if the firmware breaks serial the bot cannot connect at all. Staying on **2.5.20** is the last known-good version for this use case.
 
-> **Rule of thumb:** keep the meshtastic Python library version and the radio firmware on the same major version number.
+> **Rule of thumb:** if your serial connection is failing or timing out, downgrade the T190 firmware to 2.5.20 before debugging anything else.
+
+### Does inverting the T190 display affect the bot?
+
+**No.** The T190's display orientation (normal or inverted) is a Meshtastic firmware setting that only controls what appears on the radio's own screen. The Pi communicates with the T190 exclusively over USB serial — it never reads or writes the radio's display. Flip/invert/rotate the T190 display freely without touching any code.
 
 ### The phone app no longer connects — is that normal?
 
@@ -81,6 +142,12 @@ If you need to change radio settings (channel, frequency, node name, etc.) and t
 4. Make your changes in the Config tab, save, and reboot the radio
 
 This works regardless of Bluetooth state and is often more reliable than the phone app anyway.
+
+---
+
+## ⚠️ Boot timing — wait before panicking
+
+On first power-on, `meshbot.service` sometimes loses a race with the USB serial port and crashes once before restarting. systemd automatically restarts it within 5 seconds. **Always wait at least 15–20 seconds** after the boot selector splash screen before deciding Mode 3 failed to load. The LCD will go blank briefly during the restart and then show the Pi.Alert dashboard.
 
 ---
 
@@ -113,7 +180,17 @@ Or export it as an environment variable instead:
 export GROQ_API_KEY="your_key_here"
 ```
 
-### 4. Check your serial port
+### 4. Configure Pi.Alert integration (Mode 3 only)
+
+Edit the constants near the top of `mesh_groq_ai_bot_oled.py`:
+
+```python
+PIALERT_BASE_URL = "http://YOUR_PIALERT_IP/pialert/api/"
+PIALERT_API_KEY  = "your_pialert_api_key"
+ALERT_NODE       = "!your_node_id"   # mesh node to DM on anomaly
+```
+
+### 5. Check your serial port
 
 The bot defaults to `/dev/ttyACM0`. Verify your radio's port:
 ```bash
@@ -121,7 +198,7 @@ ls /dev/ttyACM* /dev/ttyUSB*
 ```
 If different, edit `SERIAL_PORT` near the top of `mesh_groq_ai_bot_oled.py`.
 
-### 5. Install the systemd services
+### 6. Install the systemd services
 
 These make the bot and boot selector start automatically on every boot.
 
@@ -139,7 +216,7 @@ sudo systemctl enable meshbot.service
 sudo systemctl enable mode-selector.service
 ```
 
-### 6. Reboot
+### 7. Reboot
 
 ```bash
 sudo reboot
@@ -191,10 +268,10 @@ sudo reboot
 ## Running Manually (without systemd)
 
 ```bash
-# MeshBot with status screen
+# MeshBot with status screen (Mode 1)
 python3 mesh_groq_ai_bot_oled.py
 
-# MeshBot with matrix rain screensaver
+# MeshBot with Pi.Alert monitor + matrix rain (Mode 3)
 touch /tmp/meshbot_screensaver
 python3 mesh_groq_ai_bot_oled.py
 
@@ -208,7 +285,7 @@ sudo python3 mode_selector.py
 
 | File | Purpose |
 |------|---------|
-| `mesh_groq_ai_bot_oled.py` | Main bot — Meshtastic listener, Groq AI, broadcast replies, matrix rain |
+| `mesh_groq_ai_bot_oled.py` | Main bot — Meshtastic listener, Groq AI, Pi.Alert monitor, anomaly alerter, matrix rain |
 | `mode_selector.py` | Boot menu displayed on the LCD HAT at startup |
 | `LCD_1in44.py` | Waveshare 1.44" LCD SPI driver |
 | `LCD_Config.py` | GPIO/SPI hardware configuration for the LCD |
@@ -216,6 +293,8 @@ sudo python3 mode_selector.py
 | `requirements.txt` | Python dependencies |
 | `systemd/` | Ready-to-use systemd service files for auto-start on boot |
 | `images/` | Project photos |
+| `pialert-patch/` | Daemon scripts for the Pi.Alert host (ARP watch, WiFi scan, BLE scan) |
+| `.seen_anomalies.json` | Auto-generated — persists seen anomaly keys across reboots (do not edit) |
 
 ---
 
@@ -225,6 +304,8 @@ sudo python3 mode_selector.py
 - Matrix rain is optimised for the Pi Zero 2W — uses PIL column draws (~12 FPS) instead of per-pixel math
 - The 3/24h broadcast cap means the bot will never spam a channel even if left running indefinitely
 - Groq AI replies are capped at 100 tokens to keep mesh messages short
+- `PYTHONUNBUFFERED=1` is set in the systemd service so log output appears immediately in `meshbot.log`
+- The Pi.Alert poll interval (`PIALERT_POLL_S`) and screensaver idle timeout (`SCREENSAVER_IDLE_S`) are constants at the top of `mesh_groq_ai_bot_oled.py` and can be tuned freely
 
 ---
 
