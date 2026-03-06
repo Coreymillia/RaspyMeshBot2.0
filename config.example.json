@@ -1,3 +1,6 @@
 {
-    "groq_api_key": "YOUR_GROQ_API_KEY_HERE"
+    "groq_api_key": "YOUR_GROQ_API_KEY_HERE",
+    "pialert_base_url": "http://YOUR_PIALERT_IP/pialert/api/",
+    "pialert_api_key": "YOUR_PIALERT_API_KEY_HERE",
+    "alert_node": "!your_node_id"
 }

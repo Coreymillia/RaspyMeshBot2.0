@@ -61,12 +61,21 @@ MODEL            = "llama-3.1-8b-instant"
 SERIAL_PORT      = "/dev/ttyACM0"
 MAX_MESH_MSG_LEN = 200
 
-# Pi.Alert integration
-PIALERT_BASE_URL   = "http://192.168.0.105/pialert/api/"
-PIALERT_API_KEY    = "1oNPYqIXPRd8NkhFC9iMwY7LMPNaUcc2cWIL7gRe9xeRvxlwDKvvLj0QylQi"
+# Pi.Alert integration — edit config.json to set these
+def _cfg():
+    cfg = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
+    try:
+        with open(cfg) as _f:
+            return _json.load(_f)
+    except Exception:
+        return {}
+
+_c = _cfg()
+PIALERT_BASE_URL   = _c.get('pialert_base_url', 'http://192.168.0.105/pialert/api/')
+PIALERT_API_KEY    = _c.get('pialert_api_key', '')
 PIALERT_POLL_S     = 60    # seconds between Pi.Alert polls
 SCREENSAVER_IDLE_S = 300   # 5 minutes idle → activate matrix rain
-ALERT_NODE         = "!edac358a"  # mesh node to DM on anomaly
+ALERT_NODE         = _c.get('alert_node', '!changeme')
 
 # ==== HAT LCD SETUP ====
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
