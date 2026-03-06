@@ -1,6 +1,6 @@
 [Unit]
 Description=Pi-Bot Boot Mode Selector (Waveshare 1.44" LCD HAT)
-After=local-fs.target sysinit.target
+After=local-fs.target sysinit.target dbus.target
 DefaultDependencies=no
 
 [Service]
