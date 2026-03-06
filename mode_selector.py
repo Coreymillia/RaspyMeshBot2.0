@@ -98,8 +98,9 @@ def launch_meshbot(lcd):
     except Exception:
         pass
     GPIO.cleanup()
-    # Start meshbot.service (non-blocking — we exit after)
-    subprocess.Popen(
+    # Block until systemctl delivers the start command — Popen exits too fast
+    # and systemd kills the child process before it can reach D-Bus.
+    subprocess.run(
         ['systemctl', 'start', 'meshbot.service'],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
     )
@@ -129,7 +130,7 @@ def launch_meshbot_screensaver(lcd):
         open('/tmp/meshbot_screensaver', 'w').close()
     except Exception:
         pass
-    subprocess.Popen(
+    subprocess.run(
         ['systemctl', 'start', 'meshbot.service'],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
     )
