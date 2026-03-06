@@ -50,8 +50,37 @@ There are **28 unique canned replies** so responses are not repetitive.
 
 - Raspberry Pi Zero 2 W
 - [Waveshare 1.44" LCD HAT](https://www.waveshare.com/1.44inch-lcd-hat.htm) (128×128 SPI, buttons KEY1/KEY2/KEY3)
-- Any Meshtastic-compatible radio connected via USB (tested with **Heltec Vision Master T190** on `/dev/ttyACM0`)
+- Meshtastic radio connected via USB — **only tested with the Heltec Vision Master T190**
 - Internet connection on the Pi (for Groq AI replies)
+
+---
+
+## ⚠️ Important: Radio Firmware Version
+
+**This project has only been tested with the Heltec Vision Master T190 running Meshtastic firmware 2.6.x.**
+
+### Why 2.6.x?
+
+The `meshtastic` Python library communicates with the radio over USB serial using Protobuf messages. Meshtastic's Python library is versioned to **match the firmware major version** — the library used here targets firmware 2.6. If you upgrade the radio to firmware 2.7+, the Protobuf definitions may not match and the serial connection can fail or time out, breaking the bot entirely.
+
+> **Rule of thumb:** keep the meshtastic Python library version and the radio firmware on the same major version number.
+
+### The phone app no longer connects — is that normal?
+
+Yes, and it is a known Meshtastic issue. Firmware versions 2.6.x and 2.7.x both have widespread Bluetooth/BLE bugs where the phone app fails to pair or re-connect after a firmware update. This is **not caused by this project** — it affects many devices across many firmware builds.
+
+**The radio still works perfectly for this project** because the bot communicates over USB serial, not Bluetooth.
+
+### Configuring the radio without the phone app
+
+If you need to change radio settings (channel, frequency, node name, etc.) and the phone app won't connect, use the **Meshtastic web client over USB serial**:
+
+1. Connect the T190 to any PC via USB
+2. Go to **https://client.meshtastic.org** in Chrome or Edge
+3. Click **Serial** → select your COM port → **Connect**
+4. Make your changes in the Config tab, save, and reboot the radio
+
+This works regardless of Bluetooth state and is often more reliable than the phone app anyway.
 
 ---
 
