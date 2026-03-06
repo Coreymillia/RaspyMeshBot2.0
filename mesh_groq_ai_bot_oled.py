@@ -2,8 +2,15 @@
 """
 Groq AI MeshBot with Waveshare 1.44" LCD HAT Display
 -----------------------------------------------------
-Replaces the removed 0.96" I2C OLED with the 128x128 colour SPI HAT.
-All Meshtastic + Groq AI logic is unchanged.
+Mode 1 (default): Live mesh status screen on LCD.
+Mode 3 (SCREENSAVER_MODE): Pi.Alert network monitor dashboard with
+  rule-based anomaly alerter. Sends DM to ALERT_NODE on anomalies.
+  Matrix rain screensaver activates after SCREENSAVER_IDLE_S of inactivity.
+
+Mode 3 button layout (HAT buttons, active LOW):
+  KEY1 (BCM 21): cycle Pi.Alert views
+  KEY2 (BCM 20): wake screensaver / force Pi.Alert display
+  KEY3 (BCM 16): toggle backlight
 """
 
 from pubsub import pub
@@ -27,7 +34,7 @@ if not hasattr(pub, "_original_sendMessage"):
     pub._original_sendMessage = pub.sendMessage
     pub.sendMessage = safe_sendMessage
 
-import time, sys, os, threading, random, math
+import time, sys, os, threading, random
 import meshtastic
 import meshtastic.serial_interface
 import requests
@@ -49,18 +56,29 @@ def _load_api_key():
     except Exception:
         return ''
 
-GROQ_API_KEY = _load_api_key()
-MODEL        = "llama-3.1-8b-instant"
-SERIAL_PORT  = "/dev/ttyACM0"
+GROQ_API_KEY     = _load_api_key()
+MODEL            = "llama-3.1-8b-instant"
+SERIAL_PORT      = "/dev/ttyACM0"
 MAX_MESH_MSG_LEN = 200
 
+# Pi.Alert integration
+PIALERT_BASE_URL   = "http://192.168.0.105/pialert/api/"
+PIALERT_API_KEY    = "1oNPYqIXPRd8NkhFC9iMwY7LMPNaUcc2cWIL7gRe9xeRvxlwDKvvLj0QylQi"
+PIALERT_POLL_S     = 60    # seconds between Pi.Alert polls
+SCREENSAVER_IDLE_S = 300   # 5 minutes idle → activate matrix rain
+ALERT_NODE         = "!edac358a"  # mesh node to DM on anomaly
+
 # ==== HAT LCD SETUP ====
-# LCD drivers are in the same directory (copied from /root/Raspyjack/)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-_lcd_ok = False
-_lcd    = None
+_lcd_ok   = False
+_lcd      = None
 _lcd_lock = threading.Lock()
+
+# Button pins (active LOW, internal pull-up)
+KEY1_PIN = 21   # cycle Pi.Alert view (Mode 3)
+KEY2_PIN = 20   # wake screensaver (Mode 3)
+KEY3_PIN = 16   # backlight toggle (all modes)
 
 try:
     import RPi.GPIO as GPIO
@@ -69,10 +87,9 @@ try:
     _lcd = LCD_1in44.LCD()
     _lcd.LCD_Init(LCD_1in44.SCAN_DIR_DFT)
     _lcd.LCD_Clear()
-    # Make sure backlight is ON (mode_selector may have left it low)
     GPIO.output(LCD_Config.LCD_BL_PIN, GPIO.HIGH)
-    # Button pins (active LOW, internal pull-up)
-    KEY3_PIN = 16   # backlight toggle
+    GPIO.setup(KEY1_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    GPIO.setup(KEY2_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
     GPIO.setup(KEY3_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
     _lcd_ok = True
     print("[HAT] Waveshare 1.44\" LCD initialised")
@@ -91,14 +108,60 @@ def _font(size, bold=False):
 F10B = _font(10, bold=True)
 F9   = _font(9)
 F8   = _font(8)
+F7   = _font(7)
 
-# ── Draw helpers ─────────────────────────────────────────────────────────────
-_BL_ON = True   # backlight state
+# ── Global display state ─────────────────────────────────────────────────────
+_BL_ON = True
 
-# Screensaver mode — set by presence of flag file written by mode_selector
-SCREENSAVER_MODE     = os.path.exists('/tmp/meshbot_screensaver')
-_screensaver_pause   = threading.Event()  # set = screensaver paused
+SCREENSAVER_MODE    = os.path.exists('/tmp/meshbot_screensaver')
+_screensaver_pause  = threading.Event()  # set = force-show reply/anomaly screen
+_screensaver_active = False              # True = matrix rain is running
+_last_activity      = time.monotonic()  # last user/mesh/alert interaction
 
+# Pi.Alert shared state
+_pialert_data   = {}        # latest data keyed by endpoint name
+_pialert_lock   = threading.Lock()
+_current_view   = 0         # which Pi.Alert view is shown (0-4)
+NUM_PA_VIEWS    = 5
+_seen_anomalies = set()     # dedup set — keys of anomalies already alerted
+
+# Persistent anomaly dedup file — survives reboots
+_SEEN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.seen_anomalies.json')
+
+
+def _load_seen_anomalies():
+    """Load previously seen anomaly keys from disk."""
+    try:
+        with open(_SEEN_FILE) as f:
+            data = _json.load(f)
+        # Prune keys older than 48 hours using timestamp suffix
+        cutoff = (datetime.now() - __import__('datetime').timedelta(hours=48)).strftime('%Y-%m-%d %H:%M')
+        pruned = {k for k in data if not any(k.startswith(p) for p in ('arp:', 'new:')) or k > cutoff}
+        _seen_anomalies.update(data)
+    except Exception:
+        pass
+
+
+def _save_seen_anomalies():
+    """Persist seen anomaly keys to disk."""
+    try:
+        with open(_SEEN_FILE, 'w') as f:
+            _json.dump(list(_seen_anomalies), f)
+    except Exception:
+        pass
+
+
+_load_seen_anomalies()
+
+
+def _mark_activity():
+    """Reset idle timer and wake display from screensaver."""
+    global _last_activity, _screensaver_active
+    _last_activity      = time.monotonic()
+    _screensaver_active = False
+
+
+# ── Backlight ────────────────────────────────────────────────────────────────
 def _toggle_backlight():
     global _BL_ON
     if not _lcd_ok:
@@ -110,34 +173,31 @@ def _toggle_backlight():
         pass
 
 
+# ── Status display (Mode 1) ──────────────────────────────────────────────────
 def _draw_display(status="booting", node_id="", peer_count=0,
                   msg_count=0, last_sender="", last_time="",
                   last_preview="", ai_status="ready"):
-    """Build and push a full 128x128 frame to the LCD."""
+    """Build and push a full 128×128 status frame (used in Mode 1)."""
     if not _lcd_ok:
         return
 
     img  = Image.new('RGB', (128, 128), (0, 0, 0))
     draw = ImageDraw.Draw(img)
 
-    # ── Header bar ──────────────────────────────────────────────────────────
     STATUS_COLOR = {
-        'ok':       (0,  130, 60),
-        'booting':  (0,  70, 140),
-        'error':    (160, 0,  0),
-        'ai_busy':  (140, 90, 0),
+        'ok':      (0,  130,  60),
+        'booting': (0,   70, 140),
+        'error':   (160,  0,   0),
+        'ai_busy': (140, 90,   0),
     }.get(status, (0, 70, 140))
 
     draw.rectangle([(0, 0), (128, 16)], fill=STATUS_COLOR)
     draw.text((4, 3), "MESH AI BOT", font=F9, fill=(255, 255, 255))
-    # Status dot on the right
     dot = {'ok': '●', 'booting': '○', 'error': '✖', 'ai_busy': '◉'}.get(status, '○')
     draw.text((108, 3), dot, font=F9,
               fill=(0, 255, 80) if status == 'ok' else (255, 180, 0))
 
     y = 20
-
-    # ── Node info ───────────────────────────────────────────────────────────
     draw.text((2, y), "NODE:", font=F8, fill=(120, 120, 120))
     draw.text((36, y), node_id[:16] if node_id else "connecting...", font=F8,
               fill=(200, 230, 255))
@@ -147,11 +207,8 @@ def _draw_display(status="booting", node_id="", peer_count=0,
     draw.text((40, y), str(peer_count), font=F8, fill=(100, 220, 100))
     y += 11
 
-    # Divider
-    draw.line([(0, y), (128, y)], fill=(50, 50, 50))
-    y += 4
+    draw.line([(0, y), (128, y)], fill=(50, 50, 50)); y += 4
 
-    # ── Message stats ───────────────────────────────────────────────────────
     draw.text((2, y), "DMs:", font=F8, fill=(120, 120, 120))
     draw.text((32, y), str(msg_count), font=F9, fill=(255, 220, 80))
     y += 12
@@ -166,28 +223,21 @@ def _draw_display(status="booting", node_id="", peer_count=0,
               fill=(160, 200, 160))
     y += 11
 
-    # Divider
-    draw.line([(0, y), (128, y)], fill=(50, 50, 50))
-    y += 4
+    draw.line([(0, y), (128, y)], fill=(50, 50, 50)); y += 4
 
-    # ── Last message preview ─────────────────────────────────────────────────
     draw.text((2, y), "MSG:", font=F8, fill=(120, 120, 120))
-    preview = last_preview[:20] if last_preview else "..."
-    draw.text((30, y), preview, font=F8, fill=(220, 220, 220))
+    draw.text((30, y), (last_preview[:20] if last_preview else "..."), font=F8,
+              fill=(220, 220, 220))
     y += 11
 
-    # ── AI status ────────────────────────────────────────────────────────────
     ai_col = (100, 220, 100) if ai_status == 'ready' else \
-             (255, 180,  0)  if ai_status == 'busy'  else (200, 80, 80)
+             (255, 180,   0) if ai_status == 'busy'  else (200, 80, 80)
     draw.text((2, y), "AI:", font=F8, fill=(120, 120, 120))
     draw.text((22, y), ai_status, font=F8, fill=ai_col)
     y += 11
 
-    # Divider
-    draw.line([(0, y), (128, y)], fill=(50, 50, 50))
-    y += 3
+    draw.line([(0, y), (128, y)], fill=(50, 50, 50)); y += 3
 
-    # ── Clock footer ─────────────────────────────────────────────────────────
     now = datetime.now().strftime("%H:%M:%S")
     draw.text((2, y), now, font=F8, fill=(80, 80, 80))
     draw.text((72, y), "KEY3:backlight", font=F8, fill=(40, 40, 40))
@@ -196,63 +246,360 @@ def _draw_display(status="booting", node_id="", peer_count=0,
         _lcd.LCD_ShowImage(img, 0, 0)
 
 
-REPLY_DISPLAY_S = 30   # seconds to hold the reply screen
+# ── Pi.Alert display views (Mode 3) ─────────────────────────────────────────
+
+def _pa_header(draw, title, color=(0, 70, 140)):
+    """Draw a 14px header bar with title and view-indicator dots."""
+    draw.rectangle([(0, 0), (128, 14)], fill=color)
+    draw.text((4, 3), title, font=F8, fill=(255, 255, 255))
+    for i in range(NUM_PA_VIEWS):
+        x   = 100 + i * 6
+        col = (255, 255, 0) if i == _current_view else (60, 60, 60)
+        draw.ellipse([(x, 5), (x + 3, 8)], fill=col)
+
+
+def _draw_pa_dashboard(draw, data):
+    status = data.get('system-status', {})
+    _pa_header(draw, "PI.ALERT", (0, 60, 130))
+    y = 17
+    scan_time = status.get('Last_Scan', '--:--')
+    draw.text((2, y), f"Scan: {scan_time}", font=F8, fill=(150, 150, 150))
+    y += 10
+    draw.line([(0, y), (128, y)], fill=(40, 40, 40)); y += 3
+    for label, key, col in (
+        ("DEVICES", 'All_Devices',     (200, 200, 200)),
+        ("ONLINE",  'Online_Devices',  (80,  220,  80)),
+        ("NEW",     'New_Devices',     (255, 220,  50)),
+        ("DOWN",    'Down_Devices',    (220,  60,  60)),
+        ("OFFLINE", 'Offline_Devices', (140, 140, 140)),
+    ):
+        draw.text((4, y), label,  font=F8, fill=(120, 120, 120))
+        draw.text((60, y), str(status.get(key, '?')), font=F9, fill=col)
+        y += 11
+    draw.line([(0, y), (128, y)], fill=(40, 40, 40)); y += 3
+    now = datetime.now().strftime("%H:%M:%S")
+    draw.text((2, y), now, font=F7, fill=(60, 60, 60))
+    draw.text((52, y), "KEY1:next", font=F7, fill=(50, 50, 50))
+
+
+def _draw_pa_online(draw, data):
+    devices = data.get('all-online', [])
+    _pa_header(draw, f"ONLINE ({len(devices)})", (0, 100, 40))
+    y = 17
+    for dev in devices[:7]:
+        name     = (dev.get('dev_Name') or 'Unknown')[:15]
+        ip       = dev.get('dev_LastIP', '')
+        short_ip = '.' + ip.split('.')[-1] if ip else ''
+        draw.text((2, y),   name,     font=F7, fill=(200, 240, 200))
+        draw.text((96, y),  short_ip, font=F7, fill=(120, 180, 120))
+        y += 10
+    if len(devices) > 7:
+        draw.text((2, y), f"+{len(devices) - 7} more", font=F7, fill=(80, 80, 80))
+
+
+def _draw_pa_new(draw, data):
+    devices = data.get('all-new', [])
+    _pa_header(draw, f"NEW ({len(devices)})", (130, 100, 0))
+    y = 17
+    for dev in devices[:5]:
+        name     = (dev.get('dev_Name') or 'Unknown')[:15]
+        ip       = dev.get('dev_LastIP', '')
+        short_ip = '.' + ip.split('.')[-1] if ip else ''
+        first    = (dev.get('dev_FirstConnection') or '')[:10]
+        draw.text((2, y),  name,     font=F7, fill=(255, 230, 120))
+        draw.text((96, y), short_ip, font=F7, fill=(180, 160, 80))
+        y += 9
+        if first:
+            draw.text((4, y), first, font=F7, fill=(100, 80, 40))
+            y += 9
+    if len(devices) > 5:
+        draw.text((2, y), f"+{len(devices) - 5} more", font=F7, fill=(80, 80, 80))
+
+
+def _draw_pa_arp(draw, data):
+    alerts = data.get('arp-alerts', [])
+    color  = (180, 30, 30) if alerts else (0, 90, 0)
+    _pa_header(draw, f"ARP ALERTS ({len(alerts)})", color)
+    y = 17
+    if not alerts:
+        draw.text((4, y + 20), "No ARP alerts", font=F9, fill=(80, 200, 80))
+        return
+    for alert in alerts[:4]:
+        ip       = alert.get('ip', '')
+        short_ip = '.' + ip.split('.')[-1] if ip else ''
+        t        = (alert.get('time') or '')[-8:]
+        old      = (alert.get('old_mac') or '')[:11]
+        new      = (alert.get('new_mac') or '')[:11]
+        draw.text((2, y), f"MAC CHG {short_ip}", font=F7, fill=(255, 100, 100)); y += 9
+        draw.text((4, y), f">{old}",             font=F7, fill=(200, 200, 100)); y += 9
+        draw.text((4, y), f">{new}",             font=F7, fill=(100, 200, 255)); y += 9
+        draw.text((4, y), t,                     font=F7, fill=(80,  80,  80));  y += 10
+        if y > 115:
+            break
+
+
+def _draw_pa_wifi(draw, data):
+    wifi  = data.get('wifi-shady', {})
+    aps   = wifi.get('shady_aps', []) if isinstance(wifi, dict) else []
+    cnt   = wifi.get('shady_count', len(aps)) if isinstance(wifi, dict) else len(aps)
+    color = (150, 60, 0) if aps else (0, 80, 0)
+    _pa_header(draw, f"SHADY WIFI ({cnt})", color)
+    y = 17
+    if not aps:
+        draw.text((4, y + 20), "No shady APs", font=F9, fill=(80, 200, 80))
+        return
+    for ap in aps[:3]:
+        ssid  = (ap.get('ssid') or 'Unknown')[:16]
+        score = ap.get('score', 0)
+        sec   = (ap.get('security') or '')[:8]
+        draw.text((2, y), ssid, font=F7, fill=(255, 180, 80)); y += 9
+        s_col = (220, 60, 60) if score >= 20 else (200, 180, 50)
+        draw.text((4, y), f"{sec}  score:{score}", font=F7, fill=s_col); y += 11
+
+
+_PA_VIEW_DRAW = [
+    _draw_pa_dashboard,
+    _draw_pa_online,
+    _draw_pa_new,
+    _draw_pa_arp,
+    _draw_pa_wifi,
+]
+
+
+def _draw_pialert_view(view_index=None):
+    """Render the current (or specified) Pi.Alert view to the LCD."""
+    if not _lcd_ok:
+        return
+    vi = view_index if view_index is not None else _current_view
+    with _pialert_lock:
+        data = dict(_pialert_data)
+    img  = Image.new('RGB', (128, 128), (0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    _PA_VIEW_DRAW[vi](draw, data)
+    with _lcd_lock:
+        _lcd.LCD_ShowImage(img, 0, 0)
+
+
+# ── Reply display ────────────────────────────────────────────────────────────
+REPLY_DISPLAY_S = 30
 
 
 def _draw_reply(sender, reply_text):
-    """Show the AI reply word-wrapped on the full 128x128 screen."""
     if not _lcd_ok:
         return
     import textwrap
     img  = Image.new('RGB', (128, 128), (0, 0, 0))
     draw = ImageDraw.Draw(img)
-
-    # Header
     draw.rectangle([(0, 0), (128, 16)], fill=(120, 0, 60))
-    label = "AI -> " + sender[:14]
-    draw.text((4, 3), label, font=F9, fill=(255, 255, 255))
-
-    # Word-wrap reply at ~21 chars per line, up to 6 lines
+    draw.text((4, 3), "AI -> " + sender[:14], font=F9, fill=(255, 255, 255))
     lines = textwrap.wrap(reply_text, width=21)[:6]
     y = 20
     for line in lines:
         draw.text((2, y), line, font=F8, fill=(220, 240, 200))
         y += 11
-
-    # Footer hint
-    footer = "showing " + str(REPLY_DISPLAY_S) + "s..."
-    draw.text((2, 114), footer, font=F8, fill=(60, 60, 60))
+    draw.text((2, 114), f"showing {REPLY_DISPLAY_S}s...", font=F8, fill=(60, 60, 60))
     with _lcd_lock:
         _lcd.LCD_ShowImage(img, 0, 0)
 
 
 def _show_reply_bg(bot, sender, reply_text):
-    """Show reply screen for REPLY_DISPLAY_S seconds, then restore status."""
+    """Show AI reply for REPLY_DISPLAY_S seconds, then restore display."""
     def _worker():
+        _mark_activity()
         if SCREENSAVER_MODE:
             _screensaver_pause.set()
         _draw_reply(sender, reply_text)
         time.sleep(REPLY_DISPLAY_S)
         if SCREENSAVER_MODE:
             _screensaver_pause.clear()
+            _mark_activity()  # don't immediately re-enter screensaver after reply
         else:
             bot.update_display(status='ok')
-    t = threading.Thread(target=_worker, daemon=True)
-    t.start()
+    threading.Thread(target=_worker, daemon=True).start()
+
+
+# ── Anomaly alert display ────────────────────────────────────────────────────
+def _draw_anomaly_alert(title, lines, hold_s=20):
+    """Show a red anomaly screen for hold_s seconds."""
+    if not _lcd_ok:
+        return
+    img  = Image.new('RGB', (128, 128), (0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    draw.rectangle([(0, 0), (128, 16)], fill=(200, 30, 0))
+    draw.text((4, 3), f"! {title}", font=F8, fill=(255, 255, 0))
+    y = 20
+    for line in lines[:7]:
+        draw.text((2, y), line[:21], font=F8, fill=(255, 220, 150))
+        y += 12
+    draw.text((2, 116), "ALERT SENT VIA MESH", font=F7, fill=(180, 50, 50))
+    with _lcd_lock:
+        _lcd.LCD_ShowImage(img, 0, 0)
+    time.sleep(hold_s)
+
+
+# ==== PI.ALERT POLLER ====
+
+def _pialert_fetch(endpoint):
+    """Fetch one Pi.Alert API endpoint. Returns parsed JSON or None."""
+    try:
+        url = (f"{PIALERT_BASE_URL}?api-key={PIALERT_API_KEY}"
+               f"&get={endpoint}")
+        r = requests.get(url, timeout=10)
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        print(f"[PiAlert] {endpoint} error: {e}")
+        return None
+
+
+def _pialert_poller_thread(bot):
+    """Polls Pi.Alert every PIALERT_POLL_S seconds; detects anomalies."""
+    print("[PiAlert] Poller started")
+    while True:
+        try:
+            new_data = {}
+            for ep in ('system-status', 'all-online', 'all-new',
+                       'all-down', 'arp-alerts', 'wifi-shady'):
+                result = _pialert_fetch(ep)
+                if result is not None:
+                    new_data[ep] = result
+            if new_data:
+                with _pialert_lock:
+                    _pialert_data.update(new_data)
+                online = new_data.get('system-status', {}).get('Online_Devices', '?')
+                print(f"[PiAlert] Refreshed — online:{online}")
+                _check_anomalies(bot, new_data)
+        except Exception as e:
+            print(f"[PiAlert] Poller error: {e}")
+        time.sleep(PIALERT_POLL_S)
+
+
+def _check_anomalies(bot, data):
+    """Apply detection rules and fire alerts for any new anomalies."""
+    anomalies = []
+    now_dt = datetime.now()
+
+    # Rule 1: ARP / MAC changes — only alert if seen within last 24 hours
+    for alert in data.get('arp-alerts', []):
+        t_str = (alert.get('time') or '')
+        try:
+            t_dt = datetime.strptime(t_str, '%Y-%m-%d %H:%M:%S')
+            age_h = (now_dt - t_dt).total_seconds() / 3600
+            if age_h > 24:
+                continue  # ignore stale ARP alerts
+        except Exception:
+            pass  # if timestamp can't be parsed, allow it through
+        key = f"arp:{alert.get('ip')}:{alert.get('new_mac')}:{t_str[:16]}"
+        if key not in _seen_anomalies:
+            _seen_anomalies.add(key)
+            ip  = alert.get('ip', 'unknown')
+            old = alert.get('old_mac', '')
+            new = alert.get('new_mac', '')
+            anomalies.append(('ARP ALERT', [
+                f"MAC change on {ip}",
+                f"Old: {old}",
+                f"New: {new}",
+            ], 3))  # (title, lines, view_to_switch_to)
+
+    # Rule 2: New devices — only alert if first seen within last 24 hours
+    for dev in data.get('all-new', []):
+        mac   = dev.get('dev_MAC', '')
+        first = (dev.get('dev_FirstConnection') or '')[:16]
+        try:
+            first_dt = datetime.strptime(first, '%Y-%m-%d %H:%M')
+            age_h = (now_dt - first_dt).total_seconds() / 3600
+            if age_h > 24:
+                _seen_anomalies.add(f"new:{mac}:{first}")  # mark old ones seen to skip forever
+                continue
+        except Exception:
+            pass
+        key = f"new:{mac}:{first}"
+        if key not in _seen_anomalies:
+            _seen_anomalies.add(key)
+            name = dev.get('dev_Name') or 'UNKNOWN'
+            ip   = dev.get('dev_LastIP', '')
+            anomalies.append(('NEW DEVICE', [
+                name,
+                f"IP:  {ip}",
+                f"MAC: {mac[:17]}",
+                f"1st: {first}",
+            ], 2))
+
+    # Rule 3: Devices going down
+    for dev in data.get('all-down', []):
+        mac = dev.get('dev_MAC', '')
+        key = f"down:{mac}"
+        if key not in _seen_anomalies:
+            _seen_anomalies.add(key)
+            name = dev.get('dev_Name') or 'UNKNOWN'
+            ip   = dev.get('dev_LastIP', '')
+            anomalies.append(('DEVICE DOWN', [
+                name,
+                f"IP:  {ip}",
+                f"MAC: {mac[:17]}",
+            ], 2))
+
+    # Rule 4: High-risk shady WiFi (score >= 20)
+    wifi = data.get('wifi-shady', {})
+    for ap in (wifi.get('shady_aps', []) if isinstance(wifi, dict) else []):
+        score = ap.get('score', 0)
+        bssid = ap.get('bssid', '')
+        key   = f"wifi:{bssid}:{score}"
+        if score >= 20 and key not in _seen_anomalies:
+            _seen_anomalies.add(key)
+            ssid = ap.get('ssid', 'Unknown')
+            sec  = ap.get('security', '')
+            anomalies.append(('SHADY WIFI', [
+                f"SSID: {ssid[:20]}",
+                f"BSSID: {bssid}",
+                f"Sec: {sec}  Score: {score}",
+            ], 4))
+
+    for title, lines, target_view in anomalies:
+        _fire_anomaly(bot, title, lines, target_view)
+    if anomalies:
+        _save_seen_anomalies()  # persist dedup state after any new alerts
+
+
+def _fire_anomaly(bot, title, lines, target_view):
+    """Wake display to anomaly view, show alert screen, send mesh DM."""
+    global _current_view
+    print(f"[PiAlert] ANOMALY: {title} — {lines}")
+    _current_view = target_view
+    _mark_activity()
+
+    def _show():
+        if SCREENSAVER_MODE:
+            _screensaver_pause.set()
+        _draw_anomaly_alert(title, lines, hold_s=20)
+        if SCREENSAVER_MODE:
+            _screensaver_pause.clear()
+        _mark_activity()
+
+    threading.Thread(target=_show, daemon=True).start()
+
+    if bot.interface:
+        msg = "[PI.ALERT] " + title + " | " + " | ".join(lines)
+        msg = msg[:MAX_MESH_MSG_LEN]
+        try:
+            bot.interface.sendText(msg, destinationId=ALERT_NODE)
+            print(f"[PiAlert] DM -> {ALERT_NODE}: {msg}")
+        except Exception as e:
+            print(f"[PiAlert] DM error: {e}")
 
 
 # ==== MATRIX RAIN SCREENSAVER ====
 def _matrix_rain_thread():
-    """Efficient matrix rain animation using column draws — fast on Pi Zero 2W."""
+    """Matrix rain — only draws frames when _screensaver_active is True."""
     if not _lcd_ok:
         return
 
-    W, H   = 128, 128
-    COL_W  = 8          # pixels per column
-    ROW_H  = 8          # pixels per row
-    COLS   = W // COL_W  # 16 columns
-    ROWS   = H // ROW_H  # 16 rows
-    CHARS  = "01ABCDEFabcdef@#$%&*+=-<>?!"
+    W, H  = 128, 128
+    COL_W = 8
+    ROW_H = 8
+    COLS  = W // COL_W
+    ROWS  = H // ROW_H
+    CHARS = "01ABCDEFabcdef@#$%&*+=-<>?!"
 
     try:
         font = ImageFont.truetype(
@@ -260,7 +607,6 @@ def _matrix_rain_thread():
     except Exception:
         font = ImageFont.load_default()
 
-    # Per-column state
     cols = [{
         'head':  random.randint(-10, 0),
         'speed': random.uniform(0.4, 1.1),
@@ -269,7 +615,8 @@ def _matrix_rain_thread():
     } for _ in range(COLS)]
 
     while True:
-        if _screensaver_pause.is_set():
+        # Only render when screensaver is active and nothing else is displayed
+        if not _screensaver_active or _screensaver_pause.is_set():
             time.sleep(0.1)
             continue
 
@@ -279,12 +626,11 @@ def _matrix_rain_thread():
         for ci, col in enumerate(cols):
             x    = ci * COL_W
             head = int(col['head'])
-
             for ti in range(col['trail']):
                 row = head - ti
                 if 0 <= row < ROWS:
                     if ti == 0:
-                        color = (200, 255, 200)       # bright head
+                        color = (200, 255, 200)
                     elif ti == 1:
                         color = (0, 230, 0)
                     else:
@@ -293,9 +639,7 @@ def _matrix_rain_thread():
                     draw.text((x, row * ROW_H),
                               col['chars'][row % len(col['chars'])],
                               font=font, fill=color)
-
             col['head'] += col['speed']
-
             if int(col['head']) - col['trail'] > ROWS:
                 col['head']  = random.randint(-col['trail'], 0)
                 col['speed'] = random.uniform(0.4, 1.1)
@@ -304,7 +648,7 @@ def _matrix_rain_thread():
 
         with _lcd_lock:
             _lcd.LCD_ShowImage(img, 0, 0)
-        time.sleep(0.08)   # ~12 FPS target
+        time.sleep(0.08)
 
 
 # ==== MESSAGE HANDLING ====
@@ -312,7 +656,7 @@ def send_long_message(interface, text, destinationId):
     if len(text) <= MAX_MESH_MSG_LEN:
         interface.sendText(text, destinationId=destinationId)
         return
-    chunks = [text[i:i+MAX_MESH_MSG_LEN] for i in range(0, len(text), MAX_MESH_MSG_LEN)]
+    chunks = [text[i:i + MAX_MESH_MSG_LEN] for i in range(0, len(text), MAX_MESH_MSG_LEN)]
     for i, chunk in enumerate(chunks):
         part_text = f"[{i+1}/{len(chunks)}] {chunk}" if len(chunks) > 1 else chunk
         interface.sendText(part_text, destinationId=destinationId)
@@ -381,12 +725,12 @@ def query_groq(prompt):
 # ==== BOT CLASS ====
 class GroqMeshBot:
     def __init__(self):
-        self.interface        = None
-        self.my_node_id       = None
-        self.message_count    = 0
-        self.last_sender      = ""
-        self.last_message_time = None
-        self.last_preview     = ""
+        self.interface              = None
+        self.my_node_id             = None
+        self.message_count          = 0
+        self.last_sender            = ""
+        self.last_message_time      = None
+        self.last_preview           = ""
         self.ai_status              = "ready"
         self.broadcast_count        = 0
         self.broadcast_window_start = datetime.now()
@@ -395,8 +739,7 @@ class GroqMeshBot:
 
     def _peer_count(self):
         try:
-            nodes = self.interface.nodes or {}
-            return max(0, len(nodes) - 1)   # exclude self
+            return max(0, len(self.interface.nodes or {}) - 1)
         except Exception:
             return 0
 
@@ -410,8 +753,8 @@ class GroqMeshBot:
             return "never"
         elapsed = int((datetime.now() - self.last_message_time).total_seconds())
         if elapsed < 60:   return f"{elapsed}s ago"
-        if elapsed < 3600: return f"{elapsed//60}m ago"
-        return f"{elapsed//3600}h ago"
+        if elapsed < 3600: return f"{elapsed // 60}m ago"
+        return f"{elapsed // 3600}h ago"
 
     def update_display(self, status='ok'):
         _draw_display(
@@ -433,7 +776,8 @@ class GroqMeshBot:
         if hasattr(self.interface, "myInfo") and self.interface.myInfo:
             self.my_node_id = self.interface.myInfo.my_node_num
             print(f"Connected as node {self._node_short()}")
-            self.update_display()
+            if not SCREENSAVER_MODE:
+                self.update_display()
         else:
             print("Warning: Could not read node ID")
             _draw_display(status='error', node_id='no node ID')
@@ -454,6 +798,7 @@ class GroqMeshBot:
                 return
 
             print("Direct message -> generating reply...")
+            _mark_activity()
             self.message_count    += 1
             self.last_message_time = datetime.now()
             self.last_preview      = text[:20]
@@ -468,7 +813,8 @@ class GroqMeshBot:
                 self.last_sender = f"!{from_node:08x}"[-8:]
 
             self.ai_status = "busy"
-            self.update_display(status='ai_busy')
+            if not SCREENSAVER_MODE:
+                self.update_display(status='ai_busy')
 
             ai_reply = query_groq(text)
             print(f"AI reply: {ai_reply}")
@@ -480,7 +826,8 @@ class GroqMeshBot:
 
         except Exception as e:
             print(f"on_receive error: {e}")
-            _draw_display(status='error', last_preview=str(e)[:20])
+            if not SCREENSAVER_MODE:
+                _draw_display(status='error', last_preview=str(e)[:20])
 
     def _handle_broadcast(self, text, from_node):
         """Reply to open-channel messages with canned responses, max 3 per 24h."""
@@ -507,29 +854,72 @@ class GroqMeshBot:
         except Exception as e:
             print(f"Broadcast send error: {e}")
 
-
     def run(self):
         self.connect()
         print("Groq AI MeshBot ready!")
-        self.update_display(status='ok')
 
         if SCREENSAVER_MODE:
-            print("[SAVER] Plasma screensaver display mode active")
-            threading.Thread(target=_matrix_rain_thread, daemon=True).start()
+            print("[SAVER] Mode 3: Pi.Alert monitor + idle matrix rain screensaver")
+            threading.Thread(target=_matrix_rain_thread,      daemon=True).start()
+            threading.Thread(target=_pialert_poller_thread,   args=(self,), daemon=True).start()
+            _draw_pialert_view()
+        else:
+            self.update_display(status='ok')
 
+        global _screensaver_active, _current_view
+        key1_was_low = False
+        key2_was_low = False
         key3_was_low = False
-        while True:
-            time.sleep(5)
-            if not SCREENSAVER_MODE:
-                self.update_display(status='ok')
+        _last_display_refresh = 0.0
 
-            # KEY3: backlight toggle
+        while True:
+            time.sleep(0.2)
+            now_m = time.monotonic()
+
+            if SCREENSAVER_MODE:
+                # Activate screensaver after idle threshold
+                idle = now_m - _last_activity
+                if not _screensaver_active and idle >= SCREENSAVER_IDLE_S:
+                    _screensaver_active = True
+                    print(f"[SAVER] Screensaver on after {idle:.0f}s idle")
+
+                # Refresh Pi.Alert display every 5 s when awake
+                if (not _screensaver_active and not _screensaver_pause.is_set()
+                        and now_m - _last_display_refresh >= 5.0):
+                    _draw_pialert_view()
+                    _last_display_refresh = now_m
+            else:
+                if now_m - _last_display_refresh >= 5.0:
+                    self.update_display(status='ok')
+                    _last_display_refresh = now_m
+
+            # Button handling
             if _lcd_ok:
                 try:
-                    key3_now = GPIO.input(KEY3_PIN) == GPIO.LOW
-                    if key3_now and not key3_was_low:
+                    k1 = GPIO.input(KEY1_PIN) == GPIO.LOW
+                    k2 = GPIO.input(KEY2_PIN) == GPIO.LOW
+                    k3 = GPIO.input(KEY3_PIN) == GPIO.LOW
+
+                    if k1 and not key1_was_low and SCREENSAVER_MODE:
+                        _current_view = (_current_view + 1) % NUM_PA_VIEWS
+                        _mark_activity()
+                        _draw_pialert_view()
+                        print(f"[BTN] KEY1: view -> {_current_view}")
+
+                    if k2 and not key2_was_low and SCREENSAVER_MODE:
+                        _mark_activity()
+                        _draw_pialert_view()
+                        print("[BTN] KEY2: wake")
+
+                    if k3 and not key3_was_low:
                         _toggle_backlight()
-                    key3_was_low = key3_now
+                        if SCREENSAVER_MODE:
+                            _mark_activity()
+                        print("[BTN] KEY3: backlight toggled")
+
+                    key1_was_low = k1
+                    key2_was_low = k2
+                    key3_was_low = k3
                 except Exception:
                     pass
 
