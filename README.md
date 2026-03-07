@@ -1,6 +1,6 @@
 # RaspyMeshBot 2.0
 
-A Raspberry Pi Zero 2 W project that combines a **Groq AI-powered Meshtastic chatbot** with a **3-mode boot selector** on a Waveshare 1.44" LCD HAT.
+A Raspberry Pi Zero 2 W project that combines a **Groq AI-powered 915Mhz LORA Meshtastic chatbot** with a **3-mode boot selector** on a Waveshare 1.44" LCD HAT.
 
 Boot the Pi, pick your mode on the screen with a button press, and go.
 
