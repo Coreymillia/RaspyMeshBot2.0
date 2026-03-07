@@ -1,0 +1,7 @@
+# Firmware source trees (large, clone from README instructions)
+firmware-2.7.19/
+firmware-2.5.20/
+
+# Keep output/ binaries and README committed
+!output/
+!README.md
