@@ -82,6 +82,7 @@ BROADCAST_DAILY_MAX = _c.get('broadcast_daily_max', 3)  # 0=silent, 1-3 broadcas
 # Pi-hole integration — no API key required for v6 public endpoints
 PIHOLE_BASE_URL       = _c.get('pihole_base_url', '')   # e.g. 'http://192.168.0.103/api'
 DNS_SPIKE_THRESHOLD   = _c.get('dns_spike_threshold', 300)  # queries/poll above baseline = alert
+ENABLE_BOT            = _c.get('enable_bot', True)   # False = Pi.Alert/Pi-hole monitor only, no Groq/Meshtastic
 
 # ==== HAT LCD SETUP ====
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -1061,6 +1062,10 @@ class GroqMeshBot:
         )
 
     def connect(self):
+        if not ENABLE_BOT:
+            print("[BOT] enable_bot=false — skipping Meshtastic connection, running monitor-only")
+            _draw_display(status='booting', node_id='monitor-only')
+            return
         print("Connecting to Meshtastic device...")
         _draw_display(status='booting', node_id='connecting...')
         port = self._find_serial_port()
@@ -1164,9 +1169,9 @@ class GroqMeshBot:
 
     def run(self):
         self.connect()
-        print("Groq AI MeshBot ready!")
+        print("Groq AI MeshBot ready!" if ENABLE_BOT else "Pi.Alert Monitor ready (bot disabled)!")
 
-        if SCREENSAVER_MODE:
+        if SCREENSAVER_MODE or not ENABLE_BOT:
             print("[SAVER] Mode 3: Pi.Alert monitor + idle matrix rain screensaver")
             threading.Thread(target=_matrix_rain_thread,      daemon=True).start()
             threading.Thread(target=_pialert_poller_thread,   args=(self,), daemon=True).start()
@@ -1184,7 +1189,7 @@ class GroqMeshBot:
             time.sleep(0.2)
             now_m = time.monotonic()
 
-            if SCREENSAVER_MODE:
+            if SCREENSAVER_MODE or not ENABLE_BOT:
                 # Activate screensaver after idle threshold
                 idle = now_m - _last_activity
                 if not _screensaver_active and idle >= SCREENSAVER_IDLE_S:

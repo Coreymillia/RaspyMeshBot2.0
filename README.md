@@ -2,7 +2,7 @@
 
 A Raspberry Pi Zero 2 W project that combines a **Groq AI-powered Meshtastic chatbot** with a **3-mode boot selector** on a Waveshare 1.44" LCD HAT.
 
-Boot the Pi, pick your mode on the screen with a button press, and go.
+Boot the Pi, pick your mode on the screen with a button press. Press the **joystick** at any time to open the built-in **web settings portal** — no SSH or manual config file editing needed.
 
 ---
 
@@ -13,7 +13,7 @@ Boot the Pi, pick your mode on the screen with a button press, and go.
 | Boot Selector | MeshBot Status | Matrix Rain Interrupted |
 |:---:|:---:|:---:|
 | ![Mode Selector](images/mode_selector.jpg) | ![MeshBot Status](images/meshbot_status.jpg) | ![Matrix Rain](images/matrix_rain_interrupt.jpg) |
-| *3-mode menu on boot — auto-selects MeshBot after 7s* | *Live status: node ID, peer count, DMs, last sender* | *Matrix rain pauses when a mesh message arrives* |
+| *3-mode menu on boot — press a key to launch, joystick to open Settings* | *Live status: node ID, peer count, DMs, last sender* | *Matrix rain pauses when a mesh message arrives* |
 
 ### Hardware (pre-case)
 
@@ -24,10 +24,10 @@ Boot the Pi, pick your mode on the screen with a button press, and go.
 
 ### In the Printed Case
 
-| Pi.Alert Dashboard (Mode 3) | AI Bot Reply (Mode 3) |
-|:---:|:---:|
-| ![Pi.Alert dashboard in case](images/IMG_20260306_175915.jpg) | ![AI bot reply in case](images/IMG_20260306_175437.jpg) |
-| *Pi.Alert live view: 48 devices, 21 online, 35 new — KEY1 cycles views* | *AI bot DM reply displayed on screen for 30 seconds* |
+| Pi.Alert Dashboard (Mode 3) | AI Bot Reply (Mode 3) | Pi-hole Stats (Mode 3) |
+|:---:|:---:|:---:|
+| ![Pi.Alert dashboard in case](images/IMG_20260306_175915.jpg) | ![AI bot reply in case](images/IMG_20260306_175437.jpg) | ![Pi-hole stats view](images/IMG_20260307_132131.jpg) |
+| *Pi.Alert live view: 48 devices, 21 online, 35 new — KEY1 cycles views* | *AI bot DM reply displayed on screen for 30 seconds* | *Pi-hole stats: 36.6% blocked, 46k total queries, top blocked domain + top DNS client* |
 
 | RaspyJack Splash (Mode 2) | RaspyJack Menu (Mode 2) |
 |:---:|:---:|
@@ -42,9 +42,10 @@ Boot the Pi, pick your mode on the screen with a button press, and go.
 |-----|------|-------------|
 | KEY1 | **MeshBot** | AI chatbot with live status screen on the LCD |
 | KEY2 | **RaspyJack** | Security toolkit (separate install — see below) |
-| KEY3 | **MeshBot + Pi.Alert Monitor** | Full AI chatbot + Pi.Alert network dashboard + idle matrix rain screensaver |
+| KEY3 | **Pi.Alert Monitor** | Live network security dashboard + Pi-hole stats + idle matrix rain screensaver |
+| Joystick | **⚙ Settings Portal** | Opens a web config page at `http://[pi-ip]:8080` — edit all settings from any browser |
 
-The boot selector times out after **7 seconds** and defaults to MeshBot automatically.
+The boot selector waits indefinitely — nothing launches until you press a button.
 
 ---
 
@@ -81,7 +82,7 @@ KEY3 launches a combined AI chatbot + live network security dashboard. The MeshB
 
 ### What's on the display
 
-Five views cycle with **KEY1**. A row of five dots in the top-right corner shows which view is active.
+Five views cycle with **KEY1**. A row of dots in the top-right corner shows which view is active.
 
 | View | Content |
 |------|---------|
@@ -90,6 +91,7 @@ Five views cycle with **KEY1**. A row of five dots in the top-right corner shows
 | 2 — New | Recently-seen new devices with first-seen timestamp |
 | 3 — ARP Alerts | MAC-change events (red header when alerts exist) |
 | 4 — Shady WiFi | Suspicious access points with security score |
+| 5 — Pi-hole | DNS block rate %, total/blocked query counts, top blocked domain, top DNS client |
 
 ### Buttons in Mode 3
 
@@ -113,11 +115,12 @@ The bot watches the Pi.Alert feed every 60 seconds and applies four detection ru
 | New device | Device first seen on the network | Last 24 hours |
 | Device down | Known device stopped responding | Any |
 | Shady WiFi | Access point with score ≥ 20 | Any |
+| DNS spike | Any device exceeds `dns_spike_threshold` queries in one poll period | 1 per IP per hour |
 
 When an anomaly is detected the bot:
 1. Wakes the display and switches to the relevant view
 2. Shows a red alert screen for 20 seconds
-3. Sends a **private DM** to node `!edac358a` over the mesh
+3. Sends a **private DM** to your configured alert node(s) over the mesh
 
 Anomalies are deduplicated across reboots via `.seen_anomalies.json` so the same event will never generate a second alert unless it reappears after 48 hours.
 
@@ -126,6 +129,36 @@ Anomalies are deduplicated across reboots via `.seen_anomalies.json` so the same
 - A running Pi.Alert instance accessible on your local network
 - Your Pi.Alert IP, API key, and the mesh node ID you want to receive alerts — all set in `config.json` (see Setup step 4)
 - The `pialert-patch/` directory in this repo contains the daemon scripts that extend Pi.Alert with ARP watching, WiFi scanning, and BLE scanning on the Pi.Alert host
+
+---
+
+## Pi-hole Integration (View 5)
+
+If you run [Pi-hole v6](https://pi-hole.net/) on your network, the bot can display live DNS stats and alert you to unusual query spikes — **no API key required**.
+
+### What's on the Pi-hole view
+
+- DNS block rate % + queries per minute
+- Total queries and total blocked (since last Pi-hole restart)
+- Top blocked domain
+- Top DNS client by query count (IP cross-referenced against Pi.Alert for device name)
+
+### DNS spike alerting
+
+The bot tracks per-device DNS query counts between polls. If any device's query delta in one 60-second poll window exceeds `dns_spike_threshold` (default 300), a mesh DM alert fires and view 5 becomes active on the LCD. Alerts are deduplicated to once per IP per hour.
+
+### Setup
+
+Add to `config.json` (or use the Settings Portal):
+
+```json
+{
+    "pihole_base_url": "http://YOUR_PIHOLE_IP/api",
+    "dns_spike_threshold": 300
+}
+```
+
+Leave `pihole_base_url` empty or omit it to disable Pi-hole integration entirely — view 5 won't appear.
 
 ---
 
@@ -206,41 +239,44 @@ cd RaspyMeshBot2.0
 pip install -r requirements.txt
 ```
 
-### 3. Add your Groq API key
+### 3. Configure your settings
 
-Get a free key at https://console.groq.com — the free tier is more than enough for a mesh bot.
+**Option A — Web Settings Portal (recommended)**
+
+After installing the service files (step 6) and rebooting, press the **joystick** on the HAT at the boot screen. The LCD shows `http://[ip]:8080`. Open that URL from any phone or laptop on your network and fill in all your keys and URLs. Save — done.
+
+**Option B — Edit config.json manually**
 
 ```bash
 cp config.example.json config.json
-nano config.json   # replace YOUR_GROQ_API_KEY_HERE with your actual key
+nano config.json
 ```
 
-Or export it as an environment variable instead:
-```bash
-export GROQ_API_KEY="your_key_here"
-```
-
-### 4. Configure Pi.Alert integration (Mode 3 only)
-
-All Pi.Alert settings live in `config.json`. Add these fields (alongside your Groq key):
+Fill in:
 
 ```json
 {
     "groq_api_key": "your_groq_key",
     "pialert_base_url": "http://YOUR_PIALERT_IP/pialert/api/",
     "pialert_api_key": "your_pialert_api_key",
-    "alert_node": "!your_node_id"
+    "alert_node": "!your_node_id",
+    "pihole_base_url": "http://YOUR_PIHOLE_IP/api",
+    "enable_bot": true
 }
 ```
+
+> Set `"enable_bot": false` to run **Pi.Alert + Pi-hole monitor only** — no Groq API key or Meshtastic radio required. Anomaly alerts are logged to console instead of sent via mesh DM.
+
+Get a free Groq key at https://console.groq.com.
 
 **How to find your Pi.Alert API key:** on your Pi.Alert host, run:
 ```bash
 grep API_KEY /opt/pialert/config/pialert.conf
 ```
 
-**How to find the node ID to DM on anomaly:** open the Meshtastic app or web client, find the node you want to receive alerts, and copy its ID — it starts with `!` followed by 8 hex characters (e.g. `!edac358a`). Set this as `alert_node` in `config.json`. **If you skip this step, alerts will be sent to a placeholder node and silently fail** — no harm done, but you won't receive them.
+**How to find the node ID to DM on anomaly:** open the Meshtastic app or web client, find the node you want to receive alerts, and copy its ID — it starts with `!` followed by 8 hex characters (e.g. `!edac358a`). Set this as `alert_node` in `config.json`. You can also provide a list: `["!node1id", "!node2id"]`. **If you skip this step, alerts will be sent to a placeholder node and silently fail** — no harm done, but you won't receive them.
 
-### 5. Check your serial port
+### 4. Check your serial port
 
 The bot defaults to `/dev/ttyACM0`. Verify your radio's port:
 ```bash
@@ -248,7 +284,7 @@ ls /dev/ttyACM* /dev/ttyUSB*
 ```
 If different, edit `SERIAL_PORT` near the top of `mesh_groq_ai_bot_oled.py`.
 
-### 6. Install the systemd services
+### 5. Install the systemd services
 
 These make the bot and boot selector start automatically on every boot.
 
@@ -266,13 +302,13 @@ sudo systemctl enable meshbot.service
 sudo systemctl enable mode-selector.service
 ```
 
-### 7. Reboot
+### 6. Reboot
 
 ```bash
 sudo reboot
 ```
 
-The 3-mode selector will appear on the LCD for 7 seconds on every boot. Press a key or wait for the default.
+The mode selector will appear on the LCD on every boot. Press **KEY1**, **KEY2**, or **KEY3** to launch a mode. Press the **joystick** to open the Settings Portal.
 
 ---
 
