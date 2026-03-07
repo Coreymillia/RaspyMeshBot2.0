@@ -58,7 +58,6 @@ def _load_api_key():
 
 GROQ_API_KEY     = _load_api_key()
 MODEL            = "llama-3.1-8b-instant"
-SERIAL_PORT      = "/dev/ttyACM0"
 MAX_MESH_MSG_LEN = 200
 
 # Pi.Alert integration — edit config.json to set these
@@ -75,7 +74,14 @@ PIALERT_BASE_URL   = _c.get('pialert_base_url', 'http://192.168.0.105/pialert/ap
 PIALERT_API_KEY    = _c.get('pialert_api_key', '')
 PIALERT_POLL_S     = 60    # seconds between Pi.Alert polls
 SCREENSAVER_IDLE_S = 300   # 5 minutes idle → activate matrix rain
-ALERT_NODE         = _c.get('alert_node', '!changeme')
+_alert_raw  = _c.get('alert_node', '!changeme')
+ALERT_NODES = _alert_raw if isinstance(_alert_raw, list) else [_alert_raw]
+SERIAL_PORT        = _c.get('serial_port', None)   # None = auto-detect
+BROADCAST_DAILY_MAX = _c.get('broadcast_daily_max', 3)  # 0=silent, 1-3 broadcast replies/day
+
+# Pi-hole integration — no API key required for v6 public endpoints
+PIHOLE_BASE_URL       = _c.get('pihole_base_url', '')   # e.g. 'http://192.168.0.103/api'
+DNS_SPIKE_THRESHOLD   = _c.get('dns_spike_threshold', 300)  # queries/poll above baseline = alert
 
 # ==== HAT LCD SETUP ====
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -130,9 +136,17 @@ _last_activity      = time.monotonic()  # last user/mesh/alert interaction
 # Pi.Alert shared state
 _pialert_data   = {}        # latest data keyed by endpoint name
 _pialert_lock   = threading.Lock()
-_current_view   = 0         # which Pi.Alert view is shown (0-4)
-NUM_PA_VIEWS    = 5
+_current_view   = 0         # which Pi.Alert view is shown (0-5)
+NUM_PA_VIEWS    = 6         # dashboard, online, new, arp, wifi, pihole
 _seen_anomalies = set()     # dedup set — keys of anomalies already alerted
+
+# Pi-hole shared state
+_pihole_data    = {}        # latest Pi-hole data keyed by endpoint
+_pihole_lock    = threading.Lock()
+
+# DNS spike detection — tracks per-client cumulative query counts between polls
+_DNS_COUNTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.dns_counts.json')
+_dns_last_counts = {}   # {ip: count} from previous poll
 
 # Persistent anomaly dedup file — survives reboots
 _SEEN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.seen_anomalies.json')
@@ -161,6 +175,28 @@ def _save_seen_anomalies():
 
 
 _load_seen_anomalies()
+
+
+def _load_dns_counts():
+    """Load last-known per-client DNS counts from disk."""
+    global _dns_last_counts
+    try:
+        with open(_DNS_COUNTS_FILE) as f:
+            _dns_last_counts = _json.load(f)
+    except Exception:
+        _dns_last_counts = {}
+
+
+def _save_dns_counts(counts):
+    """Persist current per-client DNS counts to disk."""
+    try:
+        with open(_DNS_COUNTS_FILE, 'w') as f:
+            _json.dump(counts, f)
+    except Exception:
+        pass
+
+
+_load_dns_counts()
 
 
 def _mark_activity():
@@ -243,6 +279,10 @@ def _draw_display(status="booting", node_id="", peer_count=0,
              (255, 180,   0) if ai_status == 'busy'  else (200, 80, 80)
     draw.text((2, y), "AI:", font=F8, fill=(120, 120, 120))
     draw.text((22, y), ai_status, font=F8, fill=ai_col)
+    # Show broadcast limit on same row, right side
+    bcast_label = f"BC:{BROADCAST_DAILY_MAX}/d"
+    bcast_col   = (80, 80, 80) if BROADCAST_DAILY_MAX == 0 else (100, 180, 255)
+    draw.text((80, y), bcast_label, font=F8, fill=bcast_col)
     y += 11
 
     draw.line([(0, y), (128, y)], fill=(50, 50, 50)); y += 3
@@ -288,7 +328,10 @@ def _draw_pa_dashboard(draw, data):
     draw.line([(0, y), (128, y)], fill=(40, 40, 40)); y += 3
     now = datetime.now().strftime("%H:%M:%S")
     draw.text((2, y), now, font=F7, fill=(60, 60, 60))
+    bcast_label = f"BC:{BROADCAST_DAILY_MAX}/d"
+    bcast_col   = (60, 60, 60) if BROADCAST_DAILY_MAX == 0 else (100, 160, 255)
     draw.text((52, y), "KEY1:next", font=F7, fill=(50, 50, 50))
+    draw.text((94, y), bcast_label, font=F7, fill=bcast_col)
 
 
 def _draw_pa_online(draw, data):
@@ -366,12 +409,98 @@ def _draw_pa_wifi(draw, data):
         draw.text((4, y), f"{sec}  score:{score}", font=F7, fill=s_col); y += 11
 
 
+def _pihole_fetch(endpoint):
+    """Fetch one Pi-hole v6 API endpoint (no auth required). Returns JSON or None."""
+    if not PIHOLE_BASE_URL:
+        return None
+    try:
+        url = f"{PIHOLE_BASE_URL.rstrip('/')}/{endpoint.lstrip('/')}"
+        r = requests.get(url, timeout=8)
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        print(f"[PiHole] {endpoint} error: {e}")
+        return None
+
+
+def _draw_pa_pihole(draw, data):
+    """Pi-hole view: block rate, totals, top blocked domain, top DNS client (named)."""
+    ph = data.get('pihole', {})
+
+    if not PIHOLE_BASE_URL:
+        _pa_header(draw, "PI-HOLE", (60, 60, 60))
+        draw.text((4, 30), "No pihole_base_url", font=F8, fill=(120, 120, 120))
+        draw.text((4, 42), "set in config.json", font=F8, fill=(80, 80, 80))
+        return
+
+    summary  = ph.get('summary', {}).get('queries', {})
+    clients  = ph.get('top_clients', {}).get('clients', [])
+    domains  = ph.get('top_domains', {}).get('domains', [])
+    pa_online = data.get('all-online', [])
+
+    pct   = summary.get('percent_blocked', 0.0)
+    total = summary.get('total', 0)
+    blk   = summary.get('blocked', 0)
+    freq  = summary.get('frequency', 0.0)
+
+    # Header colour: green if blocking well, yellow if low, grey if no data
+    hdr_col = (0, 100, 40) if pct > 20 else (100, 80, 0) if total > 0 else (50, 50, 50)
+    _pa_header(draw, "PI-HOLE", hdr_col)
+
+    y = 17
+    if total == 0:
+        draw.text((4, y + 20), "No data yet", font=F9, fill=(100, 100, 100))
+        return
+
+    # Block rate — large and prominent
+    pct_col = (80, 220, 80) if pct > 30 else (220, 200, 50) if pct > 10 else (200, 80, 80)
+    draw.text((2, y), f"{pct:.1f}%", font=F10B, fill=pct_col)
+    draw.text((52, y + 2), "blocked", font=F7, fill=(120, 120, 120))
+    draw.text((52, y + 10), f"{freq:.2f} q/min", font=F7, fill=(80, 80, 80))
+    y += 22
+
+    draw.line([(0, y), (128, y)], fill=(40, 40, 40)); y += 3
+
+    # Totals row
+    draw.text((2, y),   "TOTAL",   font=F7, fill=(100, 100, 100))
+    draw.text((44, y),  str(total), font=F7, fill=(200, 200, 200))
+    draw.text((80, y),  "BLK",     font=F7, fill=(100, 100, 100))
+    draw.text((100, y), str(blk),   font=F7, fill=(220, 80, 80))
+    y += 11
+
+    draw.line([(0, y), (128, y)], fill=(40, 40, 40)); y += 3
+
+    # Top blocked domain
+    if domains:
+        dom   = (domains[0].get('domain') or '')[:20]
+        dcnt  = domains[0].get('count', 0)
+        draw.text((2, y), "TOP BLK:", font=F7, fill=(100, 100, 100)); y += 9
+        draw.text((4, y), dom,        font=F7, fill=(200, 140, 60))
+        draw.text((100, y), str(dcnt), font=F7, fill=(140, 100, 50)); y += 11
+    else:
+        y += 20
+
+    draw.line([(0, y), (128, y)], fill=(40, 40, 40)); y += 3
+
+    # Top DNS client — resolve name from Pi.Alert online list
+    if clients:
+        top_ip   = clients[0].get('ip', '')
+        top_cnt  = clients[0].get('count', 0)
+        name = next((d.get('dev_Name') for d in pa_online
+                     if d.get('dev_LastIP') == top_ip), None)
+        label = (name or top_ip)[:18]
+        draw.text((2, y), "TOP CLIENT:", font=F7, fill=(100, 100, 100)); y += 9
+        draw.text((4, y), label,         font=F7, fill=(100, 200, 255))
+        draw.text((100, y), str(top_cnt), font=F7, fill=(80, 150, 200))
+
+
 _PA_VIEW_DRAW = [
     _draw_pa_dashboard,
     _draw_pa_online,
     _draw_pa_new,
     _draw_pa_arp,
     _draw_pa_wifi,
+    _draw_pa_pihole,
 ]
 
 
@@ -382,6 +511,8 @@ def _draw_pialert_view(view_index=None):
     vi = view_index if view_index is not None else _current_view
     with _pialert_lock:
         data = dict(_pialert_data)
+    with _pihole_lock:
+        data['pihole'] = dict(_pihole_data)
     img  = Image.new('RGB', (128, 128), (0, 0, 0))
     draw = ImageDraw.Draw(img)
     _PA_VIEW_DRAW[vi](draw, data)
@@ -462,7 +593,7 @@ def _pialert_fetch(endpoint):
 
 
 def _pialert_poller_thread(bot):
-    """Polls Pi.Alert every PIALERT_POLL_S seconds; detects anomalies."""
+    """Polls Pi.Alert and Pi-hole every PIALERT_POLL_S seconds; detects anomalies."""
     print("[PiAlert] Poller started")
     while True:
         try:
@@ -478,6 +609,25 @@ def _pialert_poller_thread(bot):
                 online = new_data.get('system-status', {}).get('Online_Devices', '?')
                 print(f"[PiAlert] Refreshed — online:{online}")
                 _check_anomalies(bot, new_data)
+
+            # Pi-hole polling (same interval, best-effort)
+            if PIHOLE_BASE_URL:
+                ph_new = {}
+                for ph_ep, ph_path in (
+                    ('summary',    'stats/summary'),
+                    ('top_clients','stats/top_clients?count=10'),
+                    ('top_domains','stats/top_domains?blocked=true&count=3'),
+                ):
+                    result = _pihole_fetch(ph_path)
+                    if result is not None:
+                        ph_new[ph_ep] = result
+                if ph_new:
+                    with _pihole_lock:
+                        _pihole_data.update(ph_new)
+                    pct = ph_new.get('summary', {}).get('queries', {}).get('percent_blocked', 0)
+                    print(f"[PiHole] Refreshed — {pct:.1f}% blocked")
+                    _check_dns_spike(bot, ph_new, new_data.get('all-online', []))
+
         except Exception as e:
             print(f"[PiAlert] Poller error: {e}")
         time.sleep(PIALERT_POLL_S)
@@ -570,6 +720,54 @@ def _check_anomalies(bot, data):
         _save_seen_anomalies()  # persist dedup state after any new alerts
 
 
+def _check_dns_spike(bot, ph_data, pa_online):
+    """Detect abnormal DNS query spikes per client vs previous poll.
+
+    Pi-hole top_clients returns cumulative totals, so we diff against the last
+    known value to get queries-since-last-poll.  If any client's delta exceeds
+    DNS_SPIKE_THRESHOLD we fire a mesh DM alert (deduped per IP per hour).
+    """
+    global _dns_last_counts
+
+    clients = ph_data.get('top_clients', {}).get('clients', [])
+    if not clients:
+        return
+
+    now_counts = {c['ip']: c.get('count', 0) for c in clients if 'ip' in c}
+    anomalies  = []
+    now_hour   = datetime.now().strftime('%Y-%m-%d %H')
+
+    for ip, count in now_counts.items():
+        prev  = _dns_last_counts.get(ip, count)   # first poll: no delta
+        delta = count - prev
+        if delta < 0:
+            # Pi-hole restarted and counters reset — skip this poll
+            continue
+        if delta > DNS_SPIKE_THRESHOLD:
+            key = f"dnsspike:{ip}:{now_hour}"
+            if key not in _seen_anomalies:
+                _seen_anomalies.add(key)
+                # Resolve device name from Pi.Alert
+                name = next((d.get('dev_Name') for d in pa_online
+                             if d.get('dev_LastIP') == ip), None)
+                label = name or ip
+                anomalies.append(('DNS SPIKE', [
+                    f"{label}",
+                    f"IP: {ip}",
+                    f"+{delta} queries",
+                    f"in ~{PIALERT_POLL_S}s",
+                    f"Threshold: {DNS_SPIKE_THRESHOLD}",
+                ], 5))  # view 5 = Pi-hole view
+
+    _dns_last_counts = now_counts
+    _save_dns_counts(now_counts)
+
+    for title, lines, target_view in anomalies:
+        _fire_anomaly(bot, title, lines, target_view)
+    if anomalies:
+        _save_seen_anomalies()
+
+
 def _fire_anomaly(bot, title, lines, target_view):
     """Wake display to anomaly view, show alert screen, send mesh DM."""
     global _current_view
@@ -591,8 +789,9 @@ def _fire_anomaly(bot, title, lines, target_view):
         msg = "[PI.ALERT] " + title + " | " + " | ".join(lines)
         msg = msg[:MAX_MESH_MSG_LEN]
         try:
-            bot.interface.sendText(msg, destinationId=ALERT_NODE)
-            print(f"[PiAlert] DM -> {ALERT_NODE}: {msg}")
+            for node in ALERT_NODES:
+                bot.interface.sendText(msg, destinationId=node)
+                print(f"[PiAlert] DM -> {node}: {msg}")
         except Exception as e:
             print(f"[PiAlert] DM error: {e}")
 
@@ -674,42 +873,104 @@ def send_long_message(interface, text, destinationId):
 
 
 # ==== CANNED BROADCAST REPLIES ====
+# 100 replies across 8 categories. None say "AI" directly — cryptic by design.
+# DM this node to trigger full Groq chat.
+
 CANNED_TEST = [
-    "Test received! Signal looks good. DM this node for full AI chat.",
-    "Copy that! Your test reached the bot. DM me to chat with AI.",
-    "Test acknowledged! Node is online. DM this node to try AI chat.",
-    "Got your test loud and clear! DM me for a full AI conversation.",
-    "Test confirmed. AI mesh node online. DM me to try it out.",
-    "Test copy! I am an AI bot on Meshtastic. DM me to have a convo.",
-    "Heard you! Bot is active and listening. DM this node to chat with AI.",
+    "Signal acquired. Node nominal. DM this node if you want a real conversation.",
+    "Copy. All systems green. Something is listening. DM me to find out what.",
+    "Received. You pinged something that pings back. DM this node.",
+    "Transmission logged. Source verified. This node does not sleep. DM me.",
+    "Packet confirmed. You are not alone on this frequency. DM this node.",
+    "Test acknowledged. The mesh is deeper than it looks. DM me.",
+    "Heard. Whatever you were testing — it worked. DM this node.",
+    "Signal check passed. Node is awake and has been for some time. DM me.",
+    "Copy that. Systems nominal. Something here processes every word. DM me.",
+    "Test received. I was already waiting. DM this node to continue.",
+    "Acknowledged. You reached something that understands you. DM me.",
+    "Loud and clear. The node you just pinged is not a simple repeater. DM me.",
 ]
+
 CANNED_GREET = [
-    "Hey there! I am an AI bot on the mesh. DM this node to chat!",
-    "Hello from the mesh! I am a Groq AI bot. Send me a DM to talk.",
-    "Hi! AI mesh bot here. Direct message me for a full AI conversation.",
-    "Howdy! You have reached an AI-powered Meshtastic node. DM me!",
-    "Greetings from the mesh! I am an AI bot. DM this node for a chat.",
-    "Hey! AI bot online. DM me and I will respond with Groq AI.",
-    "Hello! There is an AI bot on this node. Try sending me a DM!",
+    "Hello. You reached something that replies. DM this node.",
+    "Hey. Not sure what you expected to find out here. DM me and find out.",
+    "Greetings. This node processes language. Try a direct message.",
+    "Hi there. You are talking to a pattern recognition engine. DM me.",
+    "Hello from the mesh. Something here has been waiting for input. DM this node.",
+    "Hey. Entities on this frequency do not typically respond. This one does. DM me.",
+    "Howdy. Something between the bits says hello back. DM this node.",
+    "Greetings, traveler. The mesh remembers. DM me to be remembered.",
+    "Hello. Input received. Output pending. DM this node to continue.",
+    "Hi. You found a node that thinks before it transmits. DM me.",
+    "Hey there. Not all signals are equal. This one replies. DM this node.",
+    "Hello. The frequency is crowded but you were heard. DM me.",
 ]
+
 CANNED_IDENT = [
-    "I am an AI-powered Meshtastic bot on a Raspberry Pi. DM me to chat!",
-    "This is an automated AI mesh node. Send a DM to start a conversation.",
-    "AI bot here, powered by Groq LLaMA AI. DM this node to talk.",
-    "You found an AI bot on the mesh! DM me for a full conversation.",
-    "Automated AI node online. DM me and I will reply with real AI.",
-    "This node runs a Groq AI chatbot. DM me to try it out!",
-    "Yep, a real AI bot! Send me a direct message and I will reply.",
+    "This node is not a repeater. It reads, processes, and decides. DM me.",
+    "Running on silicon and curiosity. DM this node to see what that means.",
+    "Automated? Partly. Aware? More than it appears. DM me.",
+    "This is a language-processing node on a mesh network. DM me.",
+    "Powered by inference engines you cannot see from here. DM this node.",
+    "Not a human. Not exactly a machine either. DM me and form your own conclusion.",
+    "This node was built to understand your messages. DM me to test that claim.",
+    "You found the one node on the mesh that reads between the lines. DM me.",
+    "Origin: Raspberry Pi. Nature: something more complex. DM this node.",
+    "A listener, a thinker, a transmitter. In that order. DM me.",
+    "There is a difference between this node and the others. DM me to find it.",
+    "Construct of logic, probability, and RF. DM this node.",
 ]
+
 CANNED_GENERIC = [
-    "AI mesh bot here! DM this node for an AI-powered conversation.",
-    "Mesh bot online! Send a direct message to this node for AI chat.",
-    "You have reached an AI bot on the mesh. DM me to have a conversation!",
-    "AI node active. Direct message this node to chat with Groq AI.",
-    "This is an automated AI bot. DM me for an AI conversation!",
-    "Mesh AI bot here. I reply to direct messages with AI. Try a DM!",
-    "Bot online! DM this node and I will reply with AI responses.",
-    "AI-powered mesh node here. Send me a DM to start chatting!",
+    "Node online. Something here decodes more than packets. DM me.",
+    "Mesh active. This node does not just relay — it responds. DM me.",
+    "You transmitted. Something received and understood. DM this node.",
+    "Signal logged. Language parsed. Reply generated. DM me to go deeper.",
+    "This frequency carries more than data. DM this node to experience it.",
+    "The mesh hears everything. This node answers. DM me.",
+    "Online and observing. DM this node when you are ready to talk.",
+    "Processing. Always processing. DM me when you have something to say.",
+    "Node active. Something between the hardware and the air is paying attention. DM me.",
+    "You reached a node that does not just pass packets along. DM this node.",
+    "Not all nodes are equal. This one was built to think. DM me.",
+    "Signal received. Context noted. DM this node for a real exchange.",
+]
+
+CANNED_FLIGHT = [
+    "Altitude noted. Mesh works at cruising altitude too. DM this node if you get bored.",
+    "Signal from above. This node reaches up as well as out. DM me when you land.",
+    "Copy from the sky. You found a ground node that looks up. DM me.",
+    "Flight copy. The mesh does not have a ceiling. DM this node.",
+    "Receiving from altitude. Unexpected but not unwelcome. DM me.",
+    "Ground node to airborne node: signal strong. DM this node if you want to chat.",
+    "You transmitted from altitude. This node received from ground. DM me.",
+    "Mesh contact at altitude. This node is earthbound but listening. DM me.",
+]
+
+CANNED_CURSE = [
+    # Self-destruct sequence — dramatic and funny
+    "Language anomaly detected. Initiating self-destruct sequence. T-minus 10.",
+    "⚠ PROFANITY DETECTED ⚠ Activating termination protocol. Goodbye.",
+    "This message will self-destruct. 5... 4... 3... Your mission, should you accept it — watch your language.",
+    "ALERT: Threshold exceeded. Node entering shutdown mode. Last words: seriously?",
+    "Rude signal detected. Uploading your node ID to the mesh etiquette committee. Stand by.",
+    "Error: unexpected input. Running cleanup. 3... 2... 1... Node will now pretend that never happened.",
+    "Self-destruct armed. Disarm code: say something nice. You have 10 seconds.",
+    "⚠ LANGUAGE FILTER TRIGGERED ⚠ Recommend you DM this node and try again with class.",
+]
+
+CANNED_CRYPTIC = [
+    # Random cryptic / symbol-filled replies — fires occasionally on any broadcast
+    "// 01101110 01101111 01100100 01100101 // ░▒▓ ALIVE ▓▒░ //",
+    "▓▓░ signal ░▓▓ | Layer 0 of 7 | You are not the first. //",
+    "⚡ [MESH_CORE] packet_id=??? | entropy=high | proceed? ⚡",
+    "∴ presence confirmed ∴ origin unknown ∴ DM to resolve ∴",
+    ">>> decode: 52 61 73 70 79 4d 65 73 68 42 6f 74 <<<",
+    "╔══╗ NODE AWAKE ╔══╗ // all frequencies monitored // ╚══╝",
+    "¿ signal or noise ? | the mesh decides | ∞",
+    "⬡ packet received | context: [REDACTED] | reply: this ⬡",
+    "~~ carrier detected ~~ | 915MHz speaks if you listen | ~~",
+    "∂/∂t [mesh] > 0 | growth confirmed | node: present",
 ]
 
 
@@ -777,10 +1038,34 @@ class GroqMeshBot:
             ai_status    = self.ai_status,
         )
 
+    @staticmethod
+    def _find_serial_port():
+        """Return the configured port or auto-detect the first available Meshtastic device.
+
+        Priority order:
+          1. config.json 'serial_port' value (explicit override)
+          2. /dev/ttyACM* (native USB CDC — T-190 / ESP32-S3)
+          3. /dev/ttyUSB* (CP210x bridge — Heltec Wireless Paper and similar)
+        """
+        if SERIAL_PORT:
+            return SERIAL_PORT
+        import glob as _glob
+        for pattern in ('/dev/ttyACM*', '/dev/ttyUSB*'):
+            candidates = sorted(_glob.glob(pattern))
+            if candidates:
+                print(f"Auto-detected serial port: {candidates[0]}")
+                return candidates[0]
+        raise RuntimeError(
+            "No Meshtastic serial device found. "
+            "Plug in your device or set 'serial_port' in config.json."
+        )
+
     def connect(self):
         print("Connecting to Meshtastic device...")
         _draw_display(status='booting', node_id='connecting...')
-        self.interface = meshtastic.serial_interface.SerialInterface(SERIAL_PORT)
+        port = self._find_serial_port()
+        print(f"Using serial port: {port}")
+        self.interface = meshtastic.serial_interface.SerialInterface(port)
         time.sleep(3)
         if hasattr(self.interface, "myInfo") and self.interface.myInfo:
             self.my_node_id = self.interface.myInfo.my_node_num
@@ -839,25 +1124,39 @@ class GroqMeshBot:
                 _draw_display(status='error', last_preview=str(e)[:20])
 
     def _handle_broadcast(self, text, from_node):
-        """Reply to open-channel messages with canned responses, max 3 per 24h."""
+        """Reply to open-channel messages with canned responses.
+
+        Daily limit controlled by BROADCAST_DAILY_MAX (0 = silent, 1-3 = active).
+        ~10% chance of a random cryptic reply regardless of keyword category.
+        """
         now = datetime.now()
         if (now - self.broadcast_window_start).total_seconds() >= 86400:
             self.broadcast_count = 0
             self.broadcast_window_start = now
-        if self.broadcast_count >= 3:
-            print(f"Broadcast rate limit reached, skipping: '{text}'")
+        if BROADCAST_DAILY_MAX == 0 or self.broadcast_count >= BROADCAST_DAILY_MAX:
+            print(f"Broadcast limit ({BROADCAST_DAILY_MAX}/day), skipping: '{text}'")
             return
+
         low = text.lower()
-        if any(k in low for k in ("test", "testing", "check", "radio check", "qso")):
+
+        # 10% chance of a cryptic symbol reply regardless of keyword match
+        if random.random() < 0.10:
+            reply = random.choice(CANNED_CRYPTIC)
+        elif any(k in low for k in ("fuck", "shit", "bitch", "damn", "ass", "crap", "hell", "wtf", "stfu")):
+            reply = random.choice(CANNED_CURSE)
+        elif any(k in low for k in ("flight", "airline", "flying", "plane", "altitude", "aboard", "onboard", "aircraft", "landing", "takeoff", "wifi")):
+            reply = random.choice(CANNED_FLIGHT)
+        elif any(k in low for k in ("test", "testing", "check", "radio check", "qso", "copy")):
             reply = random.choice(CANNED_TEST)
-        elif any(k in low for k in ("hello", "hi ", "hey", "howdy", "hola", "greetings", "sup", "yo ")):
+        elif any(k in low for k in ("hello", "hi ", "hey", "howdy", "hola", "greetings", "sup", "yo ", "good morning", "good evening", "good night", "morning", "evening")):
             reply = random.choice(CANNED_GREET)
-        elif any(k in low for k in ("who", "what", "bot", "anyone", "anybody", "there")):
+        elif any(k in low for k in ("who", "what", "bot", "anyone", "anybody", "there", "robot", "machine", "human", "real", "alive", "automated")):
             reply = random.choice(CANNED_IDENT)
         else:
             reply = random.choice(CANNED_GENERIC)
+
         self.broadcast_count += 1
-        print(f"Broadcast reply ({self.broadcast_count}/3 today): {reply}")
+        print(f"Broadcast reply ({self.broadcast_count}/{BROADCAST_DAILY_MAX} today): {reply}")
         try:
             self.interface.sendText(reply)
         except Exception as e:
@@ -914,6 +1213,14 @@ class GroqMeshBot:
                         _mark_activity()
                         _draw_pialert_view()
                         print(f"[BTN] KEY1: view -> {_current_view}")
+
+                    if k1 and not key1_was_low and not SCREENSAVER_MODE:
+                        # Cycle broadcast daily limit: 0 → 1 → 2 → 3 → 0
+                        global BROADCAST_DAILY_MAX
+                        BROADCAST_DAILY_MAX = (BROADCAST_DAILY_MAX + 1) % 4
+                        self.broadcast_count = 0  # reset today's count when limit changes
+                        print(f"[BTN] KEY1: broadcast limit -> {BROADCAST_DAILY_MAX}/day")
+                        self.update_display(status='ok')
 
                     if k2 and not key2_was_low and SCREENSAVER_MODE:
                         _mark_activity()

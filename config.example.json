@@ -2,5 +2,13 @@
     "groq_api_key": "YOUR_GROQ_API_KEY_HERE",
     "pialert_base_url": "http://YOUR_PIALERT_IP/pialert/api/",
     "pialert_api_key": "YOUR_PIALERT_API_KEY_HERE",
-    "alert_node": "!your_node_id"
+    "alert_node": ["!your_primary_node_id", "!your_secondary_node_id"],
+    "broadcast_daily_max": 3,
+    "_broadcast_daily_max_comment": "0=silent, 1-3 open-channel replies per day. Also adjustable with KEY1 button on the HAT.",
+    "_serial_port_comment": "Optional — remove this and 'serial_port' to auto-detect. T-190 = /dev/ttyACM0, Heltec Wireless Paper = /dev/ttyUSB0",
+    "serial_port": "/dev/ttyACM0",
+    "_pihole_comment": "Pi-hole v6 integration — no API key needed. Leave pihole_base_url empty to disable Pi-hole view and DNS spike alerts.",
+    "pihole_base_url": "http://YOUR_PIHOLE_IP/api",
+    "_dns_spike_comment": "Alert when any device sends more than this many DNS queries in one poll period (~60s). 300 = 5 q/s sustained.",
+    "dns_spike_threshold": 300
 }
