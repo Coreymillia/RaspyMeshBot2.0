@@ -8,10 +8,31 @@ Boot the Pi, pick your mode on the screen with a button press, and go.
 
 ## Photos
 
+### UI Screenshots
+
 | Boot Selector | MeshBot Status | Matrix Rain Interrupted |
 |:---:|:---:|:---:|
 | ![Mode Selector](images/mode_selector.jpg) | ![MeshBot Status](images/meshbot_status.jpg) | ![Matrix Rain](images/matrix_rain_interrupt.jpg) |
 | *3-mode menu on boot — auto-selects MeshBot after 7s* | *Live status: node ID, peer count, DMs, last sender* | *Matrix rain pauses when a mesh message arrives* |
+
+### Hardware (pre-case)
+
+| Mode Selector + T190 | MeshBot + T190 | Matrix Rain + T190 |
+|:---:|:---:|:---:|
+| ![Mode selector on hardware](images/IMG_20260305_235716.jpg) | ![MeshBot status on hardware](images/IMG_20260306_000305.jpg) | ![Matrix rain on hardware](images/IMG_20260305_235553.jpg) |
+| *Boot selector — also showing T190 with last received message* | *MeshBot status: 99 peers, 2 DMs, AI ready* | *Matrix rain screensaver interrupted by incoming message* |
+
+### In the Printed Case
+
+| Pi.Alert Dashboard (Mode 3) | AI Bot Reply (Mode 3) |
+|:---:|:---:|
+| ![Pi.Alert dashboard in case](images/IMG_20260306_175915.jpg) | ![AI bot reply in case](images/IMG_20260306_175437.jpg) |
+| *Pi.Alert live view: 48 devices, 21 online, 35 new — KEY1 cycles views* | *AI bot DM reply displayed on screen for 30 seconds* |
+
+| RaspyJack Splash (Mode 2) | RaspyJack Menu (Mode 2) |
+|:---:|:---:|
+| ![RaspyJack splash in case](images/IMG_20260306_175706.jpg) | ![RaspyJack menu in case](images/IMG_20260306_175713.jpg) |
+| *RaspyJack loading — the T190 still shows the last mesh message received* | *RaspyJack security toolkit menu: Reverse Shell, Responder, MITM, DNS Spoofing and more* |
 
 ---
 
