@@ -1,6 +1,6 @@
 # RaspyMeshBot 2.0
 
-A Raspberry Pi Zero 2 W project that combines a **Groq AI-powered 915Mhz LORA Meshtastic chatbot** with a **3-mode boot selector** on a Waveshare 1.44" LCD HAT.
+A Raspberry Pi Zero 2 W project that combines a **Groq AI-powered Meshtastic chatbot** with a **3-mode boot selector** on a Waveshare 1.44" LCD HAT.
 
 Boot the Pi, pick your mode on the screen with a button press, and go.
 
@@ -8,6 +8,12 @@ Boot the Pi, pick your mode on the screen with a button press, and go.
 
 ## Photos
 
+### UI Screenshots
+
+| Boot Selector | MeshBot Status | Matrix Rain Interrupted |
+|:---:|:---:|:---:|
+| ![Mode Selector](images/mode_selector.jpg) | ![MeshBot Status](images/meshbot_status.jpg) | ![Matrix Rain](images/matrix_rain_interrupt.jpg) |
+| *3-mode menu on boot — auto-selects MeshBot after 7s* | *Live status: node ID, peer count, DMs, last sender* | *Matrix rain pauses when a mesh message arrives* |
 
 ### Hardware (pre-case)
 
@@ -46,17 +52,22 @@ The boot selector times out after **7 seconds** and defaults to MeshBot automati
 
 **Direct messages (DMs):** Anyone on the mesh who sends a private message to this node gets a real AI-generated reply powered by Groq LLaMA 3.1. The reply is sent back as a DM.
 
-**Open channel:** The bot also listens to public mesh traffic and replies to messages with canned responses — limited to **3 replies per 24 hours** so it never becomes annoying on a busy mesh. It responds to:
-- `test`, `testing`, `radio check` → acknowledges the test and invites a DM
-- `hello`, `hi`, `hey`, `howdy` → greeting + invite to DM
-- `who`, `bot`, `anyone there` → explains what the node is
+**Open channel:** The bot also listens to public mesh traffic and replies with canned responses. The daily broadcast limit is configurable from **0 to 3 replies per 24 hours** (default 3) — set to 0 to go completely silent on the open channel. It responds to:
+- `test`, `testing`, `check`, `radio check`, `qso`, `copy` → acknowledges the test and invites a DM
+- `hello`, `hi`, `hey`, `howdy`, `hola`, `morning`, `evening`, etc. → greeting + invite to DM
+- `who`, `what`, `bot`, `anyone`, `robot`, `human`, `alive`, etc. → explains what the node is
+- `flight`, `airline`, `flying`, `altitude`, `wifi`, etc. → airborne-specific reply
+- Profanity → dramatic self-destruct humour reply
 - Everything else → generic "AI bot here, DM me" style message
+- **10% chance on any message** → random cryptic symbol/hex reply regardless of keywords
 
-There are **28 unique canned replies** so responses are not repetitive.
+There are **74 unique canned replies** across 7 categories so responses are not repetitive.
 
 **LCD display (KEY1 mode):**
 - Shows a live status screen: node ID, peer count, DM count, last sender, time since last message, message preview, AI status
-- KEY3 toggles the backlight
+- The current broadcast limit (`BC:N/d`) is shown live on the status screen
+- **KEY1** cycles the broadcast daily limit: 0 → 1 → 2 → 3 → 0 (resets today's count each time)
+- **KEY3** toggles the backlight
 
 **LCD display (KEY3 mode — Pi.Alert Monitor):**
 
@@ -341,7 +352,7 @@ sudo python3 mode_selector.py
 
 - The bot runs as your regular user; `mode_selector.py` runs as root (needed for GPIO at boot)
 - Matrix rain is optimised for the Pi Zero 2W — uses PIL column draws (~12 FPS) instead of per-pixel math
-- The 3/24h broadcast cap means the bot will never spam a channel even if left running indefinitely
+- The broadcast daily limit (0–3) is shown live on the LCD as `BC:N/d` and can be cycled on the fly without restarting the service
 - Groq AI replies are capped at 100 tokens to keep mesh messages short
 - `PYTHONUNBUFFERED=1` is set in the systemd service so log output appears immediately in `meshbot.log`
 - The Pi.Alert poll interval (`PIALERT_POLL_S`) and screensaver idle timeout (`SCREENSAVER_IDLE_S`) are constants at the top of `mesh_groq_ai_bot_oled.py` and can be tuned freely
