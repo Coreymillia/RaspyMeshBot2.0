@@ -8,12 +8,6 @@ Boot the Pi, pick your mode on the screen with a button press, and go.
 
 ## Photos
 
-### UI Screenshots
-
-| Boot Selector | MeshBot Status | Matrix Rain Interrupted |
-|:---:|:---:|:---:|
-| ![Mode Selector](images/mode_selector.jpg) | ![MeshBot Status](images/meshbot_status.jpg) | ![Matrix Rain](images/matrix_rain_interrupt.jpg) |
-| *3-mode menu on boot — auto-selects MeshBot after 7s* | *Live status: node ID, peer count, DMs, last sender* | *Matrix rain pauses when a mesh message arrives* |
 
 ### Hardware (pre-case)
 
