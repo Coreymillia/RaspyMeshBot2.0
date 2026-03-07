@@ -1,0 +1,29 @@
+# arpwatch.service — Passive ARP anomaly detector for Pi.Alert
+#
+# Install:
+#   1. Adjust ExecStart path below if your Pi.Alert api/ dir differs.
+#   2. sudo cp arpwatch.service /etc/systemd/system/
+#   3. sudo systemctl daemon-reload
+#   4. sudo systemctl enable --now arpwatch
+#
+# Logs:  journalctl -u arpwatch -f
+
+[Unit]
+Description=ARP Watch — Passive ARP anomaly detector for Pi.Alert
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 /var/www/html/pialert/api/arpwatch_daemon.py \
+    --iface eth0 \
+    --db /opt/pialert/db/pialert.db \
+    --out /tmp/arp_status.json
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+# Raw socket capture requires root (or CAP_NET_RAW).
+User=root
+
+[Install]
+WantedBy=multi-user.target
