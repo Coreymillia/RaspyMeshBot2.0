@@ -8,10 +8,31 @@ Boot the Pi, pick your mode on the screen with a button press, and go.
 
 ## Photos
 
+### UI Screenshots
+
 | Boot Selector | MeshBot Status | Matrix Rain Interrupted |
 |:---:|:---:|:---:|
 | ![Mode Selector](images/mode_selector.jpg) | ![MeshBot Status](images/meshbot_status.jpg) | ![Matrix Rain](images/matrix_rain_interrupt.jpg) |
 | *3-mode menu on boot — auto-selects MeshBot after 7s* | *Live status: node ID, peer count, DMs, last sender* | *Matrix rain pauses when a mesh message arrives* |
+
+### Hardware (pre-case)
+
+| Mode Selector + T190 | MeshBot + T190 | Matrix Rain + T190 |
+|:---:|:---:|:---:|
+| ![Mode selector on hardware](images/IMG_20260305_235716.jpg) | ![MeshBot status on hardware](images/IMG_20260306_000305.jpg) | ![Matrix rain on hardware](images/IMG_20260305_235553.jpg) |
+| *Boot selector — also showing T190 with last received message* | *MeshBot status: 99 peers, 2 DMs, AI ready* | *Matrix rain screensaver interrupted by incoming message* |
+
+### In the Printed Case
+
+| Pi.Alert Dashboard (Mode 3) | AI Bot Reply (Mode 3) |
+|:---:|:---:|
+| ![Pi.Alert dashboard in case](images/IMG_20260306_175915.jpg) | ![AI bot reply in case](images/IMG_20260306_175437.jpg) |
+| *Pi.Alert live view: 48 devices, 21 online, 35 new — KEY1 cycles views* | *AI bot DM reply displayed on screen for 30 seconds* |
+
+| RaspyJack Splash (Mode 2) | RaspyJack Menu (Mode 2) |
+|:---:|:---:|
+| ![RaspyJack splash in case](images/IMG_20260306_175706.jpg) | ![RaspyJack menu in case](images/IMG_20260306_175713.jpg) |
+| *RaspyJack loading — the T190 still shows the last mesh message received* | *RaspyJack security toolkit menu: Reverse Shell, Responder, MITM, DNS Spoofing and more* |
 
 ---
 
@@ -91,7 +112,7 @@ The bot watches the Pi.Alert feed every 60 seconds and applies four detection ru
 When an anomaly is detected the bot:
 1. Wakes the display and switches to the relevant view
 2. Shows a red alert screen for 20 seconds
-3. Sends a **private DM** to node `!edac358a` <---PLEASE EDIT THIS TO YOUR NODE THAT YOU WANT TO SEND THE MESSAGE TO. over the mesh
+3. Sends a **private DM** to node `!edac358a` over the mesh
 
 Anomalies are deduplicated across reboots via `.seen_anomalies.json` so the same event will never generate a second alert unless it reappears after 48 hours.
 
@@ -107,7 +128,7 @@ Anomalies are deduplicated across reboots via `.seen_anomalies.json` so the same
 
 - Raspberry Pi Zero 2 W
 - [Waveshare 1.44" LCD HAT](https://www.waveshare.com/1.44inch-lcd-hat.htm) (128×128 SPI, buttons KEY1/KEY2/KEY3)
-- Meshtastic radio connected via USB — **only tested with the Heltec Vision Master T190** MESHTASTIC FIRMWARE 2.5.20
+- Meshtastic radio connected via USB — **only tested with the Heltec Vision Master T190**
 - Internet connection on the Pi (for Groq AI replies)
 
 ---
@@ -141,7 +162,7 @@ The Meshtastic web flasher no longer lists 2.5.20 in its dropdown, but you can u
 **No.** The T190's display orientation (normal or inverted) is a Meshtastic firmware setting that only controls what appears on the radio's own screen. The Pi communicates with the T190 exclusively over USB serial — it never reads or writes the radio's display. Flip/invert/rotate the T190 display freely without touching any code.
 
 ### The phone app no longer connects — is that normal?
-SOMETIMES IT WORKS, SOMETIMES IT DOES NOT!
+
 Yes, and it is a known Meshtastic issue. Firmware versions 2.6.x and 2.7.x both have widespread Bluetooth/BLE bugs where the phone app fails to pair or re-connect after a firmware update. This is **not caused by this project** — it affects many devices across many firmware builds.
 
 **The radio still works perfectly for this project** because the bot communicates over USB serial, not Bluetooth.
@@ -170,7 +191,7 @@ On first power-on, `meshbot.service` sometimes loses a race with the USB serial 
 ### 1. Clone this repo
 
 ```bash
-git clone https://github.com/Coreymillia/RaspyMeshBot2.0.git
+git clone https://github.com/YOUR_USERNAME/RaspyMeshBot2.0.git
 cd RaspyMeshBot2.0
 ```
 
@@ -212,7 +233,7 @@ All Pi.Alert settings live in `config.json`. Add these fields (alongside your Gr
 grep API_KEY /opt/pialert/config/pialert.conf
 ```
 
-**How to find the node ID to DM on anomaly:** open the Meshtastic app or web client, find the node you want to receive alerts, and copy its ID — it starts with `!` followed by 8 hex characters (e.g. `!edac358a`). Set this as `alert_node` in `config.json`. **If you skip this step, alerts will be sent to a placeholder node and silently fail** — no harm done, but you won't receive them. The placeholder is my node. Please change this. 
+**How to find the node ID to DM on anomaly:** open the Meshtastic app or web client, find the node you want to receive alerts, and copy its ID — it starts with `!` followed by 8 hex characters (e.g. `!edac358a`). Set this as `alert_node` in `config.json`. **If you skip this step, alerts will be sent to a placeholder node and silently fail** — no harm done, but you won't receive them.
 
 ### 5. Check your serial port
 
@@ -330,7 +351,6 @@ sudo python3 mode_selector.py
 - Groq AI replies are capped at 100 tokens to keep mesh messages short
 - `PYTHONUNBUFFERED=1` is set in the systemd service so log output appears immediately in `meshbot.log`
 - The Pi.Alert poll interval (`PIALERT_POLL_S`) and screensaver idle timeout (`SCREENSAVER_IDLE_S`) are constants at the top of `mesh_groq_ai_bot_oled.py` and can be tuned freely
-- Created by Coreymillia. Except for Raspy Jack. I added this for future testing of my ARP and WiFi anomaly testing firmware. But, I also did not want to lose my mesh bot. So I combined the projects. 
 
 ---
 
