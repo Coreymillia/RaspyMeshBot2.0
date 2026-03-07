@@ -185,7 +185,7 @@ On first power-on, `meshbot.service` sometimes loses a race with the USB serial 
 ### 1. Clone this repo
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/RaspyMeshBot2.0.git
+git clone https://github.com/Coreymillia/RaspyMeshBot2.0.git
 cd RaspyMeshBot2.0
 ```
 
