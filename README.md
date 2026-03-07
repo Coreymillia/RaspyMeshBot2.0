@@ -97,8 +97,8 @@ Anomalies are deduplicated across reboots via `.seen_anomalies.json` so the same
 
 ### Pi.Alert requirements
 
-- A running Pi.Alert instance accessible at `http://192.168.0.105/`
-- The Pi.Alert API key configured in `PIALERT_API_KEY` near the top of `mesh_groq_ai_bot_oled.py`
+- A running Pi.Alert instance accessible on your local network
+- Your Pi.Alert IP, API key, and the mesh node ID you want to receive alerts — all set in `config.json` (see Setup step 4)
 - The `pialert-patch/` directory in this repo contains the daemon scripts that extend Pi.Alert with ARP watching, WiFi scanning, and BLE scanning on the Pi.Alert host
 
 ---
@@ -121,6 +121,20 @@ Anomalies are deduplicated across reboots via `.seen_anomalies.json` so the same
 Starting with firmware **2.6.x**, Heltec appears to have dropped reliable USB serial support on the T190. The `meshtastic` Python library communicates with the radio over USB serial using Protobuf messages — if the firmware breaks serial the bot cannot connect at all. Staying on **2.5.20** is the last known-good version for this use case.
 
 > **Rule of thumb:** if your serial connection is failing or timing out, downgrade the T190 firmware to 2.5.20 before debugging anything else.
+
+### How to flash firmware 2.5.20 on the T190
+
+The Meshtastic web flasher no longer lists 2.5.20 in its dropdown, but you can upload the binary directly:
+
+1. Download **[firmware-esp32s3-2.5.20.4c97351.zip](https://github.com/meshtastic/firmware/releases/download/v2.5.20.4c97351/firmware-esp32s3-2.5.20.4c97351.zip)** from the official Meshtastic release
+2. Extract the zip — inside you will find `firmware-heltec-vision-master-t190-2.5.20.4c97351.bin`
+3. Plug the T190 into your PC via USB
+4. Go to **[flasher.meshtastic.org](https://flasher.meshtastic.org)** in Chrome or Edge (requires WebSerial — Firefox does not work)
+5. Select **Heltec Vision Master T190** as the device
+6. Choose **Upload .bin** and select the file extracted in step 2
+7. Click Flash and wait for it to complete — the T190 will reboot automatically
+
+> The zip contains firmware for every ESP32-S3 device. The T190-specific file is the one with `heltec-vision-master-t190` in the name.
 
 ### Does inverting the T190 display affect the bot?
 
@@ -182,13 +196,23 @@ export GROQ_API_KEY="your_key_here"
 
 ### 4. Configure Pi.Alert integration (Mode 3 only)
 
-Edit the constants near the top of `mesh_groq_ai_bot_oled.py`:
+All Pi.Alert settings live in `config.json`. Add these fields (alongside your Groq key):
 
-```python
-PIALERT_BASE_URL = "http://YOUR_PIALERT_IP/pialert/api/"
-PIALERT_API_KEY  = "your_pialert_api_key"
-ALERT_NODE       = "!your_node_id"   # mesh node to DM on anomaly
+```json
+{
+    "groq_api_key": "your_groq_key",
+    "pialert_base_url": "http://YOUR_PIALERT_IP/pialert/api/",
+    "pialert_api_key": "your_pialert_api_key",
+    "alert_node": "!your_node_id"
+}
 ```
+
+**How to find your Pi.Alert API key:** on your Pi.Alert host, run:
+```bash
+grep API_KEY /opt/pialert/config/pialert.conf
+```
+
+**How to find the node ID to DM on anomaly:** open the Meshtastic app or web client, find the node you want to receive alerts, and copy its ID — it starts with `!` followed by 8 hex characters (e.g. `!edac358a`). Set this as `alert_node` in `config.json`. **If you skip this step, alerts will be sent to a placeholder node and silently fail** — no harm done, but you won't receive them.
 
 ### 5. Check your serial port
 
