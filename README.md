@@ -53,7 +53,8 @@ Boot the Pi, pick your mode on the screen with a button press. Press the **joyst
 | KEY1 | **MeshBot** | AI chatbot with live status screen on the LCD |
 | KEY2 | **RaspyJack** | Security toolkit (separate install — see below) |
 | KEY3 | **Pi.Alert Monitor** | Live network security dashboard + Pi-hole stats + idle matrix rain screensaver |
-| Joystick | **⚙ Settings Portal** | Opens a web config page at `http://[pi-ip]:8080` — edit all settings from any browser |
+| Joystick ↑ | **Bettercap** | Passive network recon — maps every device on your LAN + web dashboard at `:8082` |
+| Joystick Press | **⚙ Settings Portal** | Opens a web config page at `http://[pi-ip]:8080` — edit all settings from any browser |
 
 The boot selector waits indefinitely — nothing launches until you press a button.
 
@@ -343,6 +344,87 @@ sudo reboot
 ```
 
 The mode selector will appear on the LCD on every boot. Press **KEY1**, **KEY2**, or **KEY3** to launch a mode. Press the **joystick** to open the Settings Portal.
+
+---
+
+## Installing Bettercap (Joystick ↑ — Optional)
+
+[Bettercap](https://www.bettercap.org) is a passive network recon tool. When installed, pressing **Joystick ↑** on the boot screen launches it and displays a live map of every device detected on your LAN directly on the LCD. A dark-themed web dashboard is also served at `http://[pi-ip]:8082` — showing device IPs, hostnames, MAC addresses, and vendor names, auto-refreshing every 5 seconds.
+
+**If Bettercap is not installed, Joystick ↑ will not crash the project** — it simply won't do anything.
+
+### Install Bettercap
+
+```bash
+sudo apt update
+sudo apt install bettercap -y
+```
+
+### Create the caplet
+
+```bash
+sudo mkdir -p /etc/bettercap
+sudo nano /etc/bettercap/pibot.cap
+```
+
+Paste the following:
+
+```
+net.recon on
+net.probe on
+set api.rest.username user
+set api.rest.password pass
+set api.rest.port 8081
+set api.rest.address 0.0.0.0
+set api.rest.websocket true
+api.rest on
+```
+
+### Create the systemd service
+
+```bash
+sudo nano /etc/systemd/system/bettercap.service
+```
+
+Paste the following:
+
+```ini
+[Unit]
+Description=Bettercap network analyzer (PiBot Mode 4)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/bettercap -no-colors -caplet /etc/bettercap/pibot.cap
+Restart=no
+```
+
+Then reload systemd:
+
+```bash
+sudo systemctl daemon-reload
+```
+
+> Do **not** enable the service — Mode 4 starts and stops it on demand via the boot selector.
+
+### Copy the dashboard script
+
+```bash
+cp bc_dashboard.py /home/<your-user>/MESH_CHATBOT/bc_dashboard.py
+```
+
+Replace `<your-user>` with your Pi username. The path must match `_BC_DASH_SCRIPT` in `mode_selector.py` (default: `/home/coreymillia/MESH_CHATBOT/bc_dashboard.py`).
+
+### Usage
+
+1. From the boot screen, press **Joystick ↑**
+2. The LCD shows the network interface, running modules, and your Pi's IP with port 8082
+3. Open **`http://[pi-ip]:8082`** in any browser on your network — no login required
+4. Press **KEY1, KEY2, or KEY3** on the device to stop Bettercap and return to the boot menu
+
+### Reboot shortcut (all modes)
+
+In any mode, **hold the joystick button for 3 seconds** to trigger a reboot prompt on the LCD. Press **Joystick ↑** to confirm reboot, or any key button to cancel. The prompt auto-cancels after 10 seconds.
 
 ---
 
