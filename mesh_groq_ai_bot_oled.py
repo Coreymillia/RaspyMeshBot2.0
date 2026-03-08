@@ -92,9 +92,11 @@ _lcd      = None
 _lcd_lock = threading.Lock()
 
 # Button pins (active LOW, internal pull-up)
-KEY1_PIN = 21   # cycle Pi.Alert view (Mode 3)
-KEY2_PIN = 20   # wake screensaver (Mode 3)
-KEY3_PIN = 16   # backlight toggle (all modes)
+KEY1_PIN      = 21   # cycle Pi.Alert view (Mode 3)
+KEY2_PIN      = 20   # wake screensaver (Mode 3)
+KEY3_PIN      = 16   # backlight toggle (all modes)
+JOY_PRESS_PIN = 13   # hold 3s = reboot prompt
+JOY_UP_PIN    = 6    # confirm reboot (YES)
 
 try:
     import RPi.GPIO as GPIO
@@ -104,9 +106,11 @@ try:
     _lcd.LCD_Init(LCD_1in44.SCAN_DIR_DFT)
     _lcd.LCD_Clear()
     GPIO.output(LCD_Config.LCD_BL_PIN, GPIO.HIGH)
-    GPIO.setup(KEY1_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-    GPIO.setup(KEY2_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-    GPIO.setup(KEY3_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    GPIO.setup(KEY1_PIN,      GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    GPIO.setup(KEY2_PIN,      GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    GPIO.setup(KEY3_PIN,      GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    GPIO.setup(JOY_PRESS_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    GPIO.setup(JOY_UP_PIN,    GPIO.IN, pull_up_down=GPIO.PUD_UP)
     _lcd_ok = True
     print("[HAT] Waveshare 1.44\" LCD initialised")
 except Exception as _e:
@@ -217,6 +221,59 @@ def _toggle_backlight():
         GPIO.output(LCD_Config.LCD_BL_PIN, GPIO.HIGH if _BL_ON else GPIO.LOW)
     except Exception:
         pass
+
+
+# ── Reboot confirmation ──────────────────────────────────────────────────────
+def _draw_reboot_confirm(selected_yes=False):
+    """Draw the hold-to-reboot confirmation screen."""
+    if not _lcd_ok:
+        return
+    img  = Image.new('RGB', (128, 128), (0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    draw.rectangle([(0, 0), (128, 18)], fill=(180, 30, 0))
+    draw.text((4, 4), "! REBOOT DEVICE ?", font=F9, fill=(255, 255, 0))
+    draw.text((4, 30), "JOY \u2191", font=F10B,
+              fill=(80, 255, 80) if selected_yes else (255, 255, 255))
+    draw.text((44, 32), "= YES, REBOOT", font=F8, fill=(80, 255, 80))
+    draw.line([(4, 55), (124, 55)], fill=(60, 60, 60))
+    draw.text((4, 60), "ANY KEY = NO, CANCEL", font=F8, fill=(200, 100, 100))
+    draw.text((4, 90), "Waiting 10s...", font=F8, fill=(100, 100, 100))
+    with _lcd_lock:
+        _lcd.LCD_ShowImage(img, 0, 0)
+
+
+def _check_reboot_hold(joy_hold_count):
+    """Call each main-loop tick. Returns updated hold count.
+    When threshold reached, shows confirm screen and waits for YES/NO.
+    Reboots if JOY_UP pressed; cancels on any KEY or timeout."""
+    if joy_hold_count < 15:   # 15 × 0.2s = 3 seconds
+        return joy_hold_count
+    # Threshold reached — show confirmation
+    print("[REBOOT] Hold detected — showing confirmation")
+    _draw_reboot_confirm()
+    deadline = time.monotonic() + 10
+    ju_was = False
+    while time.monotonic() < deadline:
+        time.sleep(0.1)
+        try:
+            ju = GPIO.input(JOY_UP_PIN) == GPIO.LOW
+            k1 = GPIO.input(KEY1_PIN)   == GPIO.LOW
+            k2 = GPIO.input(KEY2_PIN)   == GPIO.LOW
+            k3 = GPIO.input(KEY3_PIN)   == GPIO.LOW
+        except Exception:
+            return 0
+        if ju and not ju_was:
+            print("[REBOOT] Confirmed — rebooting")
+            _draw_reboot_confirm(selected_yes=True)
+            time.sleep(0.5)
+            import subprocess as _sp
+            _sp.run(['sudo', '/sbin/reboot'])
+            return 0
+        if k1 or k2 or k3:
+            print("[REBOOT] Cancelled")
+            break
+        ju_was = ju
+    return 0   # reset hold counter after confirm dismissed
 
 
 # ── Status display (Mode 1) ──────────────────────────────────────────────────
@@ -1183,6 +1240,7 @@ class GroqMeshBot:
         key1_was_low = False
         key2_was_low = False
         key3_was_low = False
+        _joy_hold    = 0      # joystick-press hold counter for reboot
         _last_display_refresh = 0.0
 
         while True:
@@ -1237,6 +1295,11 @@ class GroqMeshBot:
                         if SCREENSAVER_MODE:
                             _mark_activity()
                         print("[BTN] KEY3: backlight toggled")
+
+                    # Joystick hold → reboot prompt
+                    joy = GPIO.input(JOY_PRESS_PIN) == GPIO.LOW
+                    _joy_hold = (_joy_hold + 1) if joy else 0
+                    _joy_hold = _check_reboot_hold(_joy_hold)
 
                     key1_was_low = k1
                     key2_was_low = k2

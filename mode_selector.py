@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """
 Boot Mode Selector for Pi-Bot
-Displays a 5-second menu on the Waveshare 1.44" LCD HAT.
+Displays a mode menu on the Waveshare 1.44" LCD HAT.
 
-KEY1 (BCM 21)  →  Mode 1: MeshBot  (default on timeout)
-KEY2 (BCM 20)  →  Mode 2: RaspyJack
-KEY3 (BCM 16)  →  [reserved: Mode 3 screensaver]
+KEY1 (BCM 21)     →  Mode 1: MeshBot
+KEY2 (BCM 20)     →  Mode 2: RaspyJack
+KEY3 (BCM 16)     →  Mode 3: Pi.Alert Monitor
+JOY UP (BCM 6)    →  Mode 4: Bettercap
+JOY PRESS (BCM 13)→  Settings Portal
 """
 import sys, os, time, subprocess, threading, socket, json
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import parse_qs, unquote_plus
+import urllib.request, base64
 
 # RaspyJack LCD drivers live in /root/Raspyjack
 sys.path.insert(0, '/root/Raspyjack')
@@ -23,6 +26,7 @@ import LCD_Config
 KEY1_PIN          = 21   # MeshBot
 KEY2_PIN          = 20   # RaspyJack
 KEY3_PIN          = 16   # Pi.Alert Monitor
+JOYSTICK_UP       = 6    # Bettercap
 JOYSTICK_PRESS    = 13   # Settings portal
 
 _CHATBOT_DIR = '/home/coreymillia/MESH_CHATBOT'
@@ -42,35 +46,31 @@ def _font(path, size):
 def draw_menu(lcd, selected=None):
     img  = Image.new('RGB', (128, 128), color=(0, 0, 0))
     draw = ImageDraw.Draw(img)
-    f9   = _font(_FONT_PATH, 9)
     f8   = _font(_FONT_PATH, 8)
+    f7   = _font(_FONT_PATH, 7)
 
     # Title bar
-    draw.rectangle([(0, 0), (128, 14)], fill=(0, 70, 140))
-    draw.text((4, 3), "PI-BOT  MODE SELECT", font=f8, fill=(255, 255, 255))
+    draw.rectangle([(0, 0), (128, 12)], fill=(0, 70, 140))
+    draw.text((4, 2), "PI-BOT  MODE SELECT", font=f7, fill=(255, 255, 255))
 
-    # Mode 1 box
-    bg1 = (0, 160, 70) if selected == 1 else (30, 30, 30)
-    draw.rectangle([(3, 17), (124, 43)], fill=bg1, outline=(80, 80, 80))
-    draw.text((8, 19), "KEY1  MeshBot", font=f9, fill=(255, 255, 255))
-    draw.text((8, 32), "AI Mesh Radio Bot", font=f8, fill=(200, 200, 200))
-
-    # Mode 2 box
-    bg2 = (180, 0, 60) if selected == 2 else (30, 30, 30)
-    draw.rectangle([(3, 47), (124, 73)], fill=bg2, outline=(80, 80, 80))
-    draw.text((8, 49), "KEY2  RaspyJack", font=f9, fill=(255, 255, 255))
-    draw.text((8, 62), "Security Toolkit", font=f8, fill=(200, 200, 200))
-
-    # Mode 3 box
-    bg3 = (80, 0, 160) if selected == 3 else (30, 30, 30)
-    draw.rectangle([(3, 77), (124, 103)], fill=bg3, outline=(80, 80, 80))
-    draw.text((8, 79), "KEY3  Pi.Alert Mon", font=f9, fill=(255, 255, 255))
-    draw.text((8, 92), "Network Dashboard", font=f8, fill=(200, 200, 200))
+    # Mode boxes — 4 modes, 24px each
+    modes = [
+        (1, "KEY1  MeshBot",        "AI Mesh Radio Bot",    (0, 160, 70)),
+        (2, "KEY2  RaspyJack",      "Security Toolkit",     (180, 0, 60)),
+        (3, "KEY3  Pi.Alert Mon",   "Network Dashboard",    (80, 0, 160)),
+        (4, "JOY\u2191  Bettercap", "Network Analyzer",     (0, 110, 140)),
+    ]
+    for i, (num, title, sub, color) in enumerate(modes):
+        y0 = 14 + i * 24
+        y1 = y0 + 22
+        bg = color if selected == num else (30, 30, 30)
+        draw.rectangle([(3, y0), (124, y1)], fill=bg, outline=(60, 60, 60))
+        draw.text((7, y0 + 2),  title, font=f8, fill=(255, 255, 255))
+        draw.text((7, y0 + 13), sub,   font=f7, fill=(180, 180, 180))
 
     # Settings footer
-    draw.line([(0, 106), (128, 106)], fill=(50, 50, 50))
-    draw.text((4, 109), "JOYSTICK  \u2699 Settings", font=f8, fill=(180, 140, 0))
-    draw.text((4, 119), "Press to configure", font=f8, fill=(100, 100, 100))
+    draw.line([(0, 110), (128, 110)], fill=(50, 50, 50))
+    draw.text((4, 113), "JOY\u25cf  \u2699 Settings Portal", font=f7, fill=(180, 140, 0))
 
     lcd.LCD_ShowImage(img, 0, 0)
 
@@ -287,6 +287,143 @@ def launch_settings_portal(lcd):
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
+def _draw_reboot_confirm_ms(lcd, yes_lit=False):
+    img  = Image.new('RGB', (128, 128), (0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    f9b  = _font(_FONT_PATH_BOLD, 9)
+    f8   = _font(_FONT_PATH, 8)
+    f7   = _font(_FONT_PATH, 7)
+    draw.rectangle([(0, 0), (128, 18)], fill=(180, 30, 0))
+    draw.text((4, 4), "! REBOOT DEVICE ?", font=f8, fill=(255, 255, 0))
+    draw.text((4, 30), f"JOY \u2191 = YES, REBOOT", font=f8,
+              fill=(80, 255, 80) if yes_lit else (200, 255, 200))
+    draw.line([(4, 50), (124, 50)], fill=(60, 60, 60))
+    draw.text((4, 55), "ANY KEY = NO, CANCEL", font=f8, fill=(200, 100, 100))
+    draw.text((4, 90), "Waiting 10s...", font=f7, fill=(80, 80, 80))
+    lcd.LCD_ShowImage(img, 0, 0)
+
+
+def _check_reboot_hold_ms(lcd, joy_hold_count):
+    """mode_selector version of the reboot hold checker."""
+    if joy_hold_count < 15:
+        return joy_hold_count
+    print("[REBOOT] Hold detected — showing confirmation")
+    _draw_reboot_confirm_ms(lcd)
+    deadline = time.monotonic() + 10
+    ju_was = False
+    while time.monotonic() < deadline:
+        time.sleep(0.1)
+        try:
+            ju = GPIO.input(JOYSTICK_UP)   == GPIO.LOW
+            k1 = GPIO.input(KEY1_PIN)      == GPIO.LOW
+            k2 = GPIO.input(KEY2_PIN)      == GPIO.LOW
+            k3 = GPIO.input(KEY3_PIN)      == GPIO.LOW
+        except Exception:
+            return 0
+        if ju and not ju_was:
+            _draw_reboot_confirm_ms(lcd, yes_lit=True)
+            time.sleep(0.5)
+            subprocess.run(['sudo', '/sbin/reboot'])
+            return 0
+        if k1 or k2 or k3:
+            print("[REBOOT] Cancelled")
+            break
+        ju_was = ju
+    return 0
+
+
+# ── Bettercap display ────────────────────────────────────────────────────────
+_BC_API  = 'http://localhost:8081/api/session'
+_BC_AUTH = base64.b64encode(b'user:pass').decode()
+
+
+def _bc_fetch():
+    """Poll bettercap REST API. Returns (iface, hosts, modules_running) or None."""
+    try:
+        req = urllib.request.Request(
+            _BC_API,
+            headers={'Authorization': f'Basic {_BC_AUTH}'}
+        )
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            data = json.loads(resp.read())
+        iface   = data.get('interface', {}).get('name', '?')
+        modules = [m['name'] for m in data.get('modules', []) if m.get('running')]
+        return iface, modules
+    except Exception:
+        return None
+
+
+def _draw_bettercap_screen(lcd, local_ip, status, iface, modules):
+    img  = Image.new('RGB', (128, 128), (0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    f8b  = _font(_FONT_PATH_BOLD, 8)
+    f8   = _font(_FONT_PATH, 8)
+    f7   = _font(_FONT_PATH, 7)
+
+    hdr_col = (0, 110, 140) if status == 'running' else (100, 60, 0)
+    draw.rectangle([(0, 0), (128, 14)], fill=hdr_col)
+    draw.text((4, 3), f"BETTERCAP  {status.upper()}", font=f7, fill=(255, 255, 255))
+
+    y = 18
+    draw.text((4, y), f"IF: {iface}", font=f8, fill=(150, 200, 255)); y += 12
+    draw.line([(0, y), (128, y)], fill=(40, 40, 40)); y += 4
+
+    if modules:
+        draw.text((4, y), "MODULES:", font=f7, fill=(120, 120, 120)); y += 10
+        for m in modules[:4]:
+            draw.text((6, y), f"\u25b6 {m}", font=f7, fill=(80, 220, 120)); y += 9
+    else:
+        draw.text((4, y), "Starting modules...", font=f7, fill=(160, 120, 0)); y += 10
+
+    y = max(y + 4, 84)
+    draw.line([(0, y), (128, y)], fill=(40, 40, 40)); y += 4
+    draw.text((4, y), "Web UI:", font=f7, fill=(120, 120, 120)); y += 9
+    draw.text((4, y), f"{local_ip}:8081", font=f8b, fill=(0, 220, 255)); y += 12
+    draw.text((4, y), "user/pass: user/pass", font=f7, fill=(100, 100, 100)); y += 10
+    draw.text((4, 118), "KEY1/2/3 = back to menu", font=f7, fill=(80, 80, 80))
+
+    lcd.LCD_ShowImage(img, 0, 0)
+
+
+def launch_bettercap(lcd):
+    draw_selected(lcd, "Bettercap", (0, 80, 110))
+    time.sleep(0.8)
+
+    subprocess.run(
+        ['systemctl', 'start', 'bettercap.service'],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
+
+    local_ip = _get_local_ip()
+    _draw_bettercap_screen(lcd, local_ip, 'starting', '?', [])
+
+    k1w = k2w = k3w = False
+    joy_hold = 0
+    while True:
+        time.sleep(2)
+
+        result = _bc_fetch()
+        if result:
+            iface, modules = result
+            _draw_bettercap_screen(lcd, local_ip, 'running', iface, modules)
+        else:
+            _draw_bettercap_screen(lcd, local_ip, 'starting', '?', [])
+
+        k1 = GPIO.input(KEY1_PIN) == GPIO.LOW
+        k2 = GPIO.input(KEY2_PIN) == GPIO.LOW
+        k3 = GPIO.input(KEY3_PIN) == GPIO.LOW
+        jp = GPIO.input(JOYSTICK_PRESS) == GPIO.LOW
+        joy_hold = (joy_hold + 1) if jp else 0
+        joy_hold = _check_reboot_hold_ms(lcd, joy_hold)
+        if (k1 and not k1w) or (k2 and not k2w) or (k3 and not k3w):
+            subprocess.run(
+                ['systemctl', 'stop', 'bettercap.service'],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+        k1w, k2w, k3w = k1, k2, k3
+
+
 # ── Mode launchers ───────────────────────────────────────────────────────────
 def launch_meshbot(lcd):
     draw_selected(lcd, "MeshBot", (0, 100, 40))
@@ -354,11 +491,13 @@ def main():
     GPIO.setup(KEY1_PIN,       GPIO.IN, pull_up_down=GPIO.PUD_UP)
     GPIO.setup(KEY2_PIN,       GPIO.IN, pull_up_down=GPIO.PUD_UP)
     GPIO.setup(KEY3_PIN,       GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    GPIO.setup(JOYSTICK_UP,    GPIO.IN, pull_up_down=GPIO.PUD_UP)
     GPIO.setup(JOYSTICK_PRESS, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
     draw_menu(lcd)
 
     jp_was_low = False
+    ju_was_low = False
 
     while True:
         # KEY1 → MeshBot
@@ -379,11 +518,19 @@ def main():
             time.sleep(0.25)
             launch_meshbot_screensaver(lcd)
 
+        # Joystick UP → Bettercap
+        ju = GPIO.input(JOYSTICK_UP) == GPIO.LOW
+        if ju and not ju_was_low:
+            draw_menu(lcd, selected=4)
+            time.sleep(0.25)
+            launch_bettercap(lcd)
+        ju_was_low = ju
+
         # Joystick press → Settings portal
         jp = GPIO.input(JOYSTICK_PRESS) == GPIO.LOW
         if jp and not jp_was_low:
             launch_settings_portal(lcd)
-            draw_menu(lcd)  # Only reached if portal was cancelled
+            draw_menu(lcd)
         jp_was_low = jp
 
         time.sleep(0.05)
