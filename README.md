@@ -1,4 +1,14 @@
 # RaspyMeshBot 2.0
+## Key Features
+
+- 🤖 **Groq AI Meshtastic chatbot** — responds to direct messages and optionally public mesh traffic
+- 📡 **Multi-mode boot selector** on Waveshare LCD HAT
+- 🛜 **Pi.Alert network monitoring** with ARP, new device, and WiFi anomaly detection
+- 🧱 **Pi-hole DNS analytics** with query stats and spike detection
+- 📬 **Mesh-based alerting** — sends anomaly alerts via Meshtastic DM
+- 🖥 **Live LCD dashboard** with device status, alerts, and matrix rain screensaver
+- 🔐 **Optional RaspyJack security toolkit mode**
+- ⚙ **Built-in web settings portal** — configure everything from a browser
 
 A Raspberry Pi Zero 2 W project that combines a **Groq AI-powered Meshtastic chatbot** with a **3-mode boot selector** on a Waveshare 1.44" LCD HAT.
 
@@ -173,7 +183,7 @@ Leave `pihole_base_url` empty or omit it to disable Pi-hole integration entirely
 
 ## ⚠️ Important: Radio Firmware Version
 
-**This project has only been tested with the Heltec Vision Master T190 running Meshtastic firmware 2.5.x (specifically 2.5.20).**
+**This project has been tested with the Heltec Vision Master T190 and the Heltec LoRa32 V3, both running Meshtastic firmware 2.5.20.**
 
 ### Why 2.5.x and not newer?
 
@@ -181,19 +191,43 @@ Starting with firmware **2.6.x**, Heltec appears to have dropped reliable USB se
 
 > **Rule of thumb:** if your serial connection is failing or timing out, downgrade the T190 firmware to 2.5.20 before debugging anything else.
 
+### Pre-extracted firmware binaries
+
+Both tested devices have their 2.5.20 binaries included in the **`Heltec.bins/`** folder of this repo — no zip download or extraction needed:
+
+| File | Device | Use |
+|------|--------|-----|
+| `firmware-heltec-vision-master-t190-2.5.20.4c97351.bin` | Heltec Vision Master T190 | Full flash via web flasher |
+| `firmware-heltec-vision-master-t190-2.5.20.4c97351-update.bin` | Heltec Vision Master T190 | OTA update only |
+| `firmware-heltec-v3-2.5.20.4c97351.bin` | Heltec LoRa32 V3 | Full flash via web flasher |
+| `firmware-heltec-v3-2.5.20.4c97351-update.bin` | Heltec LoRa32 V3 | OTA update only |
+
+Use the full flash `.bin` when flashing a device for the first time or recovering it. Use the `-update.bin` for over-the-air upgrades only.
+
 ### How to flash firmware 2.5.20 on the T190
 
 The Meshtastic web flasher no longer lists 2.5.20 in its dropdown, but you can upload the binary directly:
 
-1. Download **[firmware-esp32s3-2.5.20.4c97351.zip](https://github.com/meshtastic/firmware/releases/download/v2.5.20.4c97351/firmware-esp32s3-2.5.20.4c97351.zip)** from the official Meshtastic release
-2. Extract the zip — inside you will find `firmware-heltec-vision-master-t190-2.5.20.4c97351.bin`
-3. Plug the T190 into your PC via USB
-4. Go to **[flasher.meshtastic.org](https://flasher.meshtastic.org)** in Chrome or Edge (requires WebSerial — Firefox does not work)
-5. Select **Heltec Vision Master T190** as the device
-6. Choose **Upload .bin** and select the file extracted in step 2
-7. Click Flash and wait for it to complete — the T190 will reboot automatically
+1. Grab `firmware-heltec-vision-master-t190-2.5.20.4c97351.bin` from the **`Heltec.bins/`** folder in this repo
+2. Plug the T190 into your PC via USB
+3. Go to **[flasher.meshtastic.org](https://flasher.meshtastic.org)** in Chrome or Edge (requires WebSerial — Firefox does not work)
+4. Select **Heltec Vision Master T190** as the device
+5. Choose **Upload .bin** and select the file from step 1
+6. Click Flash and wait for it to complete — the T190 will reboot automatically
 
-> The zip contains firmware for every ESP32-S3 device. The T190-specific file is the one with `heltec-vision-master-t190` in the name.
+### How to flash firmware 2.5.20 on the Heltec V3
+
+The Heltec LoRa32 V3 is a second tested device that works with this project. It uses a **CP2102 USB-to-serial chip** which shows up as `/dev/ttyUSB0` instead of the T190's `/dev/ttyACM0` — update `serial_port` in `config.json` accordingly when switching devices.
+
+1. Grab `firmware-heltec-v3-2.5.20.4c97351.bin` from the **`Heltec.bins/`** folder in this repo
+2. Plug the V3 into your PC via USB
+3. Go to **[flasher.meshtastic.org](https://flasher.meshtastic.org)** in Chrome or Edge
+4. Select **Heltec LoRa32 V3** as the device
+5. Choose **Upload .bin** and select the file from step 1
+6. Click Flash and wait — the V3 will reboot automatically
+7. In `config.json` on the Pi, set `"serial_port": "/dev/ttyUSB0"`
+
+> **Note:** The V3 and T190 cannot be connected at the same time — the bot uses a single serial port defined in `config.json`. Swap the `serial_port` value when switching between devices.
 
 ### Does inverting the T190 display affect the bot?
 
