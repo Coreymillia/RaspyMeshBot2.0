@@ -16,5 +16,6 @@
     "_mitm_comment": "Bettercap MITM test settings — configure via the settings portal at :8080. Target should be a device you own (phone/laptop). Toggle MITM on/off with Joystick LEFT while in Bettercap mode.",
     "mitm_target": "",
     "mitm_dns_domains": "",
-    "mitm_dns_address": ""
+    "mitm_dns_address": "",
+    "mitm_http_proxy": false
 }

