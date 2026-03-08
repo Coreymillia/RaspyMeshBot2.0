@@ -378,12 +378,14 @@ def _draw_bettercap_screen(lcd, local_ip, status, iface, modules):
     y = max(y + 4, 84)
     draw.line([(0, y), (128, y)], fill=(40, 40, 40)); y += 4
     draw.text((4, y), "Web UI:", font=f7, fill=(120, 120, 120)); y += 9
-    draw.text((4, y), f"{local_ip}:8081", font=f8b, fill=(0, 220, 255)); y += 12
+    draw.text((4, y), f"{local_ip}:8082", font=f8b, fill=(0, 220, 255)); y += 12
     draw.text((4, y), "user/pass: user/pass", font=f7, fill=(100, 100, 100)); y += 10
     draw.text((4, 118), "KEY1/2/3 = back to menu", font=f7, fill=(80, 80, 80))
 
     lcd.LCD_ShowImage(img, 0, 0)
 
+
+_BC_DASH_SCRIPT = '/home/coreymillia/MESH_CHATBOT/bc_dashboard.py'
 
 def launch_bettercap(lcd):
     draw_selected(lcd, "Bettercap", (0, 80, 110))
@@ -391,6 +393,11 @@ def launch_bettercap(lcd):
 
     subprocess.run(
         ['systemctl', 'start', 'bettercap.service'],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
+
+    dash_proc = subprocess.Popen(
+        [sys.executable, _BC_DASH_SCRIPT],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
     )
 
@@ -416,6 +423,7 @@ def launch_bettercap(lcd):
         joy_hold = (joy_hold + 1) if jp else 0
         joy_hold = _check_reboot_hold_ms(lcd, joy_hold)
         if (k1 and not k1w) or (k2 and not k2w) or (k3 and not k3w):
+            dash_proc.terminate()
             subprocess.run(
                 ['systemctl', 'stop', 'bettercap.service'],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
