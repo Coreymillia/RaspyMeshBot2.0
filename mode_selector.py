@@ -28,6 +28,7 @@ KEY2_PIN          = 20   # RaspyJack
 KEY3_PIN          = 16   # Pi.Alert Monitor
 JOYSTICK_UP       = 6    # Bettercap
 JOYSTICK_PRESS    = 13   # Settings portal
+JOYSTICK_LEFT     = 5    # MITM toggle (inside Bettercap mode)
 
 _CHATBOT_DIR = '/home/coreymillia/MESH_CHATBOT'
 _CONFIG_PATH = os.path.join(_CHATBOT_DIR, 'config.json')
@@ -157,6 +158,17 @@ button{{margin-top:24px;width:100%;padding:12px;background:#0a6;color:#fff;borde
 <input type="text" name="dns_spike_threshold" value="{v('dns_spike_threshold', '300')}">
 <div class="hint">Queries per poll that trigger an alert (300 = 5 q/s sustained)</div>
 </div>
+<div class="sec"><h3>Bettercap MITM Test</h3>
+<label>Target IP</label>
+<input type="text" name="mitm_target" value="{v('mitm_target')}">
+<div class="hint">IP to ARP spoof &mdash; use your own phone/laptop for testing</div>
+<label>DNS Spoof Domains</label>
+<input type="text" name="mitm_dns_domains" value="{v('mitm_dns_domains')}">
+<div class="hint">Comma-separated domains to hijack e.g. <i>*.google.com,*.facebook.com</i> &mdash; leave blank to skip DNS spoof</div>
+<label>DNS Redirect IP</label>
+<input type="text" name="mitm_dns_address" value="{v('mitm_dns_address')}">
+<div class="hint">Where hijacked DNS queries point (leave blank to use this Pi&apos;s IP)</div>
+</div>
 <button type="submit">&#128190; Save Config</button>
 </form></body></html>"""
 
@@ -247,6 +259,10 @@ def launch_settings_portal(lcd):
                 cfg['dns_spike_threshold'] = int(get('dns_spike_threshold', '300'))
             except ValueError:
                 cfg['dns_spike_threshold'] = 300
+
+            cfg['mitm_target']      = get('mitm_target').strip()
+            cfg['mitm_dns_domains'] = get('mitm_dns_domains').strip()
+            cfg['mitm_dns_address'] = get('mitm_dns_address').strip()
 
             with open(_CONFIG_PATH, 'w') as f:
                 json.dump(cfg, f, indent=4)
@@ -387,6 +403,63 @@ def _draw_bettercap_screen(lcd, local_ip, status, iface, modules):
 
 _BC_DASH_SCRIPT = '/home/coreymillia/MESH_CHATBOT/bc_dashboard.py'
 
+# ── MITM helpers ─────────────────────────────────────────────────────────────
+_MITM_CAP = '/tmp/pibot-mitm.cap'
+
+def _generate_mitm_cap(target, dns_domains, dns_address, local_ip):
+    lines = [
+        f'set arp.spoof.targets {target}',
+        'set arp.spoof.internal true',
+        'arp.spoof on',
+        'net.sniff on',
+    ]
+    if dns_domains:
+        redirect = dns_address if dns_address else local_ip
+        lines += [
+            f'set dns.spoof.domains {dns_domains}',
+            f'set dns.spoof.address {redirect}',
+            'dns.spoof on',
+        ]
+    lines += [
+        'set api.rest.username user',
+        'set api.rest.password pass',
+        'set api.rest.port 8081',
+        'set api.rest.address 0.0.0.0',
+        'set api.rest.websocket true',
+        'api.rest on',
+    ]
+    with open(_MITM_CAP, 'w') as f:
+        f.write('\n'.join(lines) + '\n')
+
+
+def _set_ip_forward(enable: bool):
+    try:
+        with open('/proc/sys/net/ipv4/ip_forward', 'w') as f:
+            f.write('1\n' if enable else '0\n')
+    except Exception as e:
+        print(f'[MITM] ip_forward: {e}')
+
+
+def _draw_mitm_screen(lcd, target, dns_on, local_ip):
+    img  = Image.new('RGB', (128, 128), (0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    f9b  = _font(_FONT_PATH_BOLD, 9)
+    f8   = _font(_FONT_PATH, 8)
+    f7   = _font(_FONT_PATH, 7)
+    draw.rectangle([(0, 0), (128, 18)], fill=(160, 0, 0))
+    draw.text((4, 4), '!! MITM ACTIVE !!', font=f9b, fill=(255, 255, 0))
+    draw.text((4, 22), 'Target:', font=f7, fill=(180, 180, 180))
+    draw.text((4, 32), target or '(none set)', font=f8, fill=(255, 80, 80))
+    draw.text((4, 46), 'ARP Spoof: ON', font=f7, fill=(80, 255, 80))
+    dns_col = (80, 255, 80) if dns_on else (100, 100, 100)
+    draw.text((4, 57), f'DNS Spoof: {"ON" if dns_on else "OFF"}', font=f7, fill=dns_col)
+    draw.line([(4, 70), (124, 70)], fill=(60, 60, 60))
+    draw.text((4, 74), f'JOY\u2190 = stop MITM', font=f7, fill=(200, 200, 0))
+    draw.text((4, 84), f'KEY = exit mode', font=f7, fill=(150, 150, 150))
+    draw.text((4, 100), f'{local_ip}:8082', font=f8, fill=(0, 180, 255))
+    lcd.LCD_ShowImage(img, 0, 0)
+
+
 def launch_bettercap(lcd):
     draw_selected(lcd, "Bettercap", (0, 80, 110))
     time.sleep(0.8)
@@ -401,35 +474,82 @@ def launch_bettercap(lcd):
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
     )
 
-    local_ip = _get_local_ip()
+    local_ip  = _get_local_ip()
+    mitm_proc = None
+    mitm_on   = False
     _draw_bettercap_screen(lcd, local_ip, 'starting', '?', [])
 
     k1w = k2w = k3w = False
+    jlw = False
     joy_hold = 0
     while True:
         time.sleep(2)
 
-        result = _bc_fetch()
-        if result:
-            iface, modules = result
-            _draw_bettercap_screen(lcd, local_ip, 'running', iface, modules)
-        else:
-            _draw_bettercap_screen(lcd, local_ip, 'starting', '?', [])
+        if not mitm_on:
+            result = _bc_fetch()
+            if result:
+                iface, modules = result
+                _draw_bettercap_screen(lcd, local_ip, 'running', iface, modules)
+            else:
+                _draw_bettercap_screen(lcd, local_ip, 'starting', '?', [])
 
-        k1 = GPIO.input(KEY1_PIN) == GPIO.LOW
-        k2 = GPIO.input(KEY2_PIN) == GPIO.LOW
-        k3 = GPIO.input(KEY3_PIN) == GPIO.LOW
+        k1 = GPIO.input(KEY1_PIN)      == GPIO.LOW
+        k2 = GPIO.input(KEY2_PIN)      == GPIO.LOW
+        k3 = GPIO.input(KEY3_PIN)      == GPIO.LOW
+        jl = GPIO.input(JOYSTICK_LEFT) == GPIO.LOW
         jp = GPIO.input(JOYSTICK_PRESS) == GPIO.LOW
         joy_hold = (joy_hold + 1) if jp else 0
         joy_hold = _check_reboot_hold_ms(lcd, joy_hold)
+
+        if jl and not jlw:
+            if not mitm_on:
+                # Load MITM config and start
+                try:
+                    with open(_CONFIG_PATH) as f:
+                        cfg = json.load(f)
+                except Exception:
+                    cfg = {}
+                target     = cfg.get('mitm_target', '').strip()
+                dns_dom    = cfg.get('mitm_dns_domains', '').strip()
+                dns_addr   = cfg.get('mitm_dns_address', '').strip()
+                if target:
+                    subprocess.run(['systemctl', 'stop', 'bettercap.service'],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    time.sleep(1)
+                    _generate_mitm_cap(target, dns_dom, dns_addr, local_ip)
+                    _set_ip_forward(True)
+                    mitm_proc = subprocess.Popen(
+                        ['/usr/bin/bettercap', '-no-colors', '-caplet', _MITM_CAP],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                    )
+                    mitm_on = True
+                    _draw_mitm_screen(lcd, target, bool(dns_dom), local_ip)
+                    print(f'[MITM] started → target={target}')
+            else:
+                # Stop MITM, restore passive
+                if mitm_proc:
+                    mitm_proc.terminate()
+                    mitm_proc = None
+                _set_ip_forward(False)
+                mitm_on = False
+                subprocess.run(['systemctl', 'start', 'bettercap.service'],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                _draw_bettercap_screen(lcd, local_ip, 'starting', '?', [])
+                print('[MITM] stopped — back to passive recon')
+
         if (k1 and not k1w) or (k2 and not k2w) or (k3 and not k3w):
+            if mitm_proc:
+                mitm_proc.terminate()
+            _set_ip_forward(False)
             dash_proc.terminate()
             subprocess.run(
                 ['systemctl', 'stop', 'bettercap.service'],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
             )
             os.execv(sys.executable, [sys.executable] + sys.argv)
+
         k1w, k2w, k3w = k1, k2, k3
+        jlw = jl
 
 
 # ── Mode launchers ───────────────────────────────────────────────────────────
@@ -501,6 +621,7 @@ def main():
     GPIO.setup(KEY3_PIN,       GPIO.IN, pull_up_down=GPIO.PUD_UP)
     GPIO.setup(JOYSTICK_UP,    GPIO.IN, pull_up_down=GPIO.PUD_UP)
     GPIO.setup(JOYSTICK_PRESS, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    GPIO.setup(JOYSTICK_LEFT,  GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
     draw_menu(lcd)
 

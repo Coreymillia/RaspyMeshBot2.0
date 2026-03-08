@@ -12,5 +12,9 @@
     "_dns_spike_comment": "Alert when any device sends more than this many DNS queries in one poll period (~60s). 300 = 5 q/s sustained.",
     "dns_spike_threshold": 300,
     "_enable_bot_comment": "Set to false to run Pi.Alert/Pi-hole network monitor only — no Groq API key or Meshtastic device required. Anomalies are logged to console instead of sent via mesh DM.",
-    "enable_bot": true
+    "enable_bot": true,
+    "_mitm_comment": "Bettercap MITM test settings — configure via the settings portal at :8080. Target should be a device you own (phone/laptop). Toggle MITM on/off with Joystick LEFT while in Bettercap mode.",
+    "mitm_target": "",
+    "mitm_dns_domains": "",
+    "mitm_dns_address": ""
 }
