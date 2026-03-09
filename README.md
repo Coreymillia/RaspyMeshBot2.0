@@ -6,9 +6,12 @@
 - 🛜 **Pi.Alert network monitoring** with ARP, new device, and WiFi anomaly detection
 - 🧱 **Pi-hole DNS analytics** with query stats and spike detection
 - 📬 **Mesh-based alerting** — sends anomaly alerts via Meshtastic DM
-- 🖥 **Live LCD dashboard** with device status, alerts, and matrix rain screensaver
+- 🌡️ **Telemetry monitor** — watches a Meshtastic sensor node (BME680 or similar) and DMs you when temperature or humidity thresholds are crossed
+- 🖥 **Live LCD dashboard** with device status, temp/humidity, alerts, and matrix rain screensaver
 - 🔐 **Optional RaspyJack security toolkit mode**
 - ⚙ **Built-in web settings portal** — configure everything from a browser
+- 🔁 **ARP baseline reset** — long-press the CYD display to re-anchor the ARP monitor after network changes
+- 🌐 **IP forward management** — persistent `ip_forward` setting survives reboots; MITM and RaspyJack auto-manage it
 
 A Raspberry Pi Zero 2 W project that combines a **Groq AI-powered Meshtastic chatbot** with a **3-mode boot selector** on a Waveshare 1.44" LCD HAT.
 
@@ -135,11 +138,79 @@ When an anomaly is detected the bot:
 
 Anomalies are deduplicated across reboots via `.seen_anomalies.json` so the same event will never generate a second alert unless it reappears after 48 hours.
 
+### ARP Baseline Reset
+
+If the ARP monitor fires a false positive (e.g. after running Bettercap or changing your network), you can reset the ARP baseline without restarting any service:
+
+- **From the CYD display:** long-press (hold 1.5 seconds) on either ARP screen — the display will confirm "Baseline reset"
+- **What it does:** re-anchors the expected MAC table to the current live state, clears all active ARP alerts and counters instantly
+
+This works via a SIGUSR1 signal to `arpwatch_daemon.py`. No SSH required.
+
 ### Pi.Alert requirements
 
 - A running Pi.Alert instance accessible on your local network
 - Your Pi.Alert IP, API key, and the mesh node ID you want to receive alerts — all set in `config.json` (see Setup step 4)
 - The `pialert-patch/` directory in this repo contains the daemon scripts that extend Pi.Alert with ARP watching, WiFi scanning, and BLE scanning on the Pi.Alert host
+
+---
+
+## Telemetry Monitor
+
+The bot can subscribe to a specific Meshtastic node's **environment telemetry** and send DM alerts when temperature or humidity cross configurable thresholds. Designed for greenhouse monitoring, server rooms, or any remote sensor deployment.
+
+### What it monitors
+
+| Field | Source | Alert condition |
+|-------|--------|-----------------|
+| Temperature | BME680 / any env sensor | Above `temp_high_f` or below `temp_low_f` |
+| Humidity | BME680 / any env sensor | Above `humidity_high` |
+| Lux | Light sensor (optional) | Logged only — no alert |
+| IAQ | BME680 air quality index (optional) | Logged only — no alert |
+
+All telemetry values are logged to `meshbot.log` on every packet received.
+
+### LCD display
+
+When telemetry data has been received, the MeshBot LCD status screen shows a live temperature and lux reading alongside the standard mesh stats.
+
+### Alert behaviour
+
+- Alerts fire as DMs to all nodes in `alert_node`
+- Each threshold condition has its own independent cooldown (`telemetry_alert_cooldown_min`, default 30 min) — crossing multiple thresholds at once sends multiple DMs but each condition won't spam you again until the cooldown expires
+
+### Setup
+
+Set in `config.json` or via the **Settings Portal → Telemetry Monitor** section:
+
+```json
+{
+    "telemetry_monitor_node": "!ba663f68",
+    "temp_high_f": 82,
+    "temp_low_f": 50,
+    "humidity_high": 65,
+    "telemetry_alert_cooldown_min": 30
+}
+```
+
+Leave `telemetry_monitor_node` blank to disable.
+
+> **Node requirements:** The target node must have environment telemetry enabled and be on the same mesh. The bot subscribes to `meshtastic.receive.telemetry` — no polling, purely event-driven. The sensor node only needs to be configured to broadcast telemetry at whatever interval you choose.
+
+---
+
+## IP Forward Management
+
+`net.ipv4.ip_forward` controls whether your Pi routes packets between interfaces — required for MITM testing (Bettercap mode), RaspyJack's traffic interception features, and NAT routing.
+
+| Scenario | Behaviour |
+|----------|-----------|
+| **Persistent OFF** (default) | ip_forward is left at system default on boot |
+| **Persistent ON** | Written to `/etc/sysctl.d/99-meshbot-ipforward.conf` — survives reboots |
+| **MITM active** | Automatically set to `1` while running, restored to your configured value on teardown |
+| **RaspyJack launch** | Automatically set to `1` before launching RaspyJack |
+
+Toggle **Persistent IP Forwarding** in the **Settings Portal → Network** section. You do not need to SSH in or edit sysctl files manually.
 
 ---
 
@@ -294,9 +365,13 @@ Fill in:
     "groq_api_key": "your_groq_key",
     "pialert_base_url": "http://YOUR_PIALERT_IP/pialert/api/",
     "pialert_api_key": "your_pialert_api_key",
-    "alert_node": "!your_node_id",
+    "alert_node": ["!your_node_id"],
     "pihole_base_url": "http://YOUR_PIHOLE_IP/api",
-    "enable_bot": true
+    "enable_bot": true,
+    "telemetry_monitor_node": "!sensor_node_id",
+    "temp_high_f": 82,
+    "temp_low_f": 50,
+    "humidity_high": 65
 }
 ```
 
@@ -487,15 +562,15 @@ sudo python3 mode_selector.py
 
 | File | Purpose |
 |------|---------|
-| `mesh_groq_ai_bot_oled.py` | Main bot — Meshtastic listener, Groq AI, Pi.Alert monitor, anomaly alerter, matrix rain |
-| `mode_selector.py` | Boot menu displayed on the LCD HAT at startup |
+| `mesh_groq_ai_bot_oled.py` | Main bot — Meshtastic listener, Groq AI, Pi.Alert monitor, telemetry monitor, anomaly alerter, matrix rain |
+| `mode_selector.py` | Boot menu + web settings portal at `:8080` |
 | `LCD_1in44.py` | Waveshare 1.44" LCD SPI driver |
 | `LCD_Config.py` | GPIO/SPI hardware configuration for the LCD |
-| `config.example.json` | API key config template — copy to `config.json` and fill in |
+| `config.example.json` | Config template — copy to `config.json` and fill in |
 | `requirements.txt` | Python dependencies |
 | `systemd/` | Ready-to-use systemd service files for auto-start on boot |
 | `images/` | Project photos |
-| `pialert-patch/` | Daemon scripts for the Pi.Alert host (ARP watch, WiFi scan, BLE scan) |
+| `pialert-patch/` | Daemon scripts for the Pi.Alert host — ARP watch (with baseline reset), WiFi scan, BLE scan, PHP API bridge |
 | `.seen_anomalies.json` | Auto-generated — persists seen anomaly keys across reboots (do not edit) |
 
 ---

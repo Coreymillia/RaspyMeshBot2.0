@@ -107,6 +107,7 @@ def _settings_html(cfg):
         return str(val).replace('"', '&quot;').replace('<', '&lt;').replace('>', '&gt;')
 
     bot_checked = 'checked' if cfg.get('enable_bot', True) else ''
+    ip_fwd_checked = 'checked' if cfg.get('ip_forward_persistent', False) else ''
     return f"""<!DOCTYPE html><html><head>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>MeshBot Settings</title><style>
@@ -172,6 +173,29 @@ button{{margin-top:24px;width:100%;padding:12px;background:#0a6;color:#fff;borde
 <input type="checkbox" name="mitm_http_proxy" value="true" {"checked" if cfg.get("mitm_http_proxy", False) else ""}>
 <span style="font-size:13px">Enable HTTP Proxy (intercept &amp; log plain HTTP traffic)</span></div>
 <div class="hint">Captures URLs, headers, and form data from unencrypted HTTP on the target device. View captured data at SSH or bettercap API /api/events</div>
+</div>
+<div class="sec"><h3>Network</h3>
+<div class="row">
+<input type="checkbox" name="ip_forward_persistent" value="true" {ip_fwd_checked}>
+<span style="font-size:13px">Persistent IP Forwarding (survives reboot)</span></div>
+<div class="hint">Writes <code style="color:#0af">net.ipv4.ip_forward=1</code> to <code style="color:#0af">/etc/sysctl.d/</code> &mdash; required for NAT, VPN routing, or if a feature needs it at all times. MITM mode sets this automatically while active; enabling this keeps it on after every reboot.</div>
+</div>
+<div class="sec"><h3>Telemetry Monitor</h3>
+<label>Monitor Node ID</label>
+<input type="text" name="telemetry_monitor_node" value="{v('telemetry_monitor_node')}">
+<div class="hint">Node ID to watch for environment data &mdash; e.g. <i>!ba663f68</i> &mdash; leave blank to disable</div>
+<label>Temp High Alert (&deg;F)</label>
+<input type="text" name="temp_high_f" value="{v('temp_high_f', '82')}">
+<div class="hint">Send DM to alert node(s) when temperature exceeds this &mdash; e.g. <i>82</i> for greenhouse cooling threshold</div>
+<label>Temp Low Alert (&deg;F)</label>
+<input type="text" name="temp_low_f" value="{v('temp_low_f', '50')}">
+<div class="hint">Send DM to alert node(s) when temperature drops below this &mdash; e.g. <i>50</i> for greenhouse heat threshold</div>
+<label>Humidity High Alert (%)</label>
+<input type="text" name="humidity_high" value="{v('humidity_high', '65')}">
+<div class="hint">Send DM to alert node(s) when relative humidity exceeds this &mdash; humidity low is not monitored</div>
+<label>Alert Cooldown (minutes)</label>
+<input type="text" name="telemetry_alert_cooldown_min" value="{v('telemetry_alert_cooldown_min', '30')}">
+<div class="hint">Minimum minutes between repeat alerts for the same condition (prevents spam)</div>
 </div>
 <button type="submit">&#128190; Save Config</button>
 </form></body></html>"""
@@ -268,9 +292,30 @@ def launch_settings_portal(lcd):
             cfg['mitm_dns_domains'] = get('mitm_dns_domains').strip()
             cfg['mitm_dns_address'] = get('mitm_dns_address').strip()
             cfg['mitm_http_proxy']  = (get('mitm_http_proxy') == 'true')
+            cfg['ip_forward_persistent'] = (get('ip_forward_persistent') == 'true')
+
+            cfg['telemetry_monitor_node'] = get('telemetry_monitor_node').strip()
+            try:
+                cfg['temp_high_f'] = float(get('temp_high_f', '82'))
+            except ValueError:
+                cfg['temp_high_f'] = 82.0
+            try:
+                cfg['temp_low_f'] = float(get('temp_low_f', '50'))
+            except ValueError:
+                cfg['temp_low_f'] = 50.0
+            try:
+                cfg['humidity_high'] = float(get('humidity_high', '65'))
+            except ValueError:
+                cfg['humidity_high'] = 65.0
+            try:
+                cfg['telemetry_alert_cooldown_min'] = int(get('telemetry_alert_cooldown_min', '30'))
+            except ValueError:
+                cfg['telemetry_alert_cooldown_min'] = 30
 
             with open(_CONFIG_PATH, 'w') as f:
                 json.dump(cfg, f, indent=4)
+
+            _apply_ip_forward_persistent(cfg)
 
             resp = b"""<html><body style="background:#111;color:#0f0;font-family:monospace;padding:20px">
 <h2>&#10003; Config Saved!</h2>
@@ -451,6 +496,34 @@ def _set_ip_forward(enable: bool):
         print(f'[MITM] ip_forward: {e}')
 
 
+_SYSCTL_IPFWD = '/etc/sysctl.d/99-meshbot-ipforward.conf'
+
+
+def _apply_ip_forward_persistent(cfg):
+    """Write/remove sysctl drop-in for reboot persistence, then apply immediately."""
+    enabled = cfg.get('ip_forward_persistent', False)
+    try:
+        if enabled:
+            with open(_SYSCTL_IPFWD, 'w') as f:
+                f.write('# Managed by MeshBot settings portal\nnet.ipv4.ip_forward = 1\n')
+        else:
+            if os.path.exists(_SYSCTL_IPFWD):
+                os.remove(_SYSCTL_IPFWD)
+    except Exception as e:
+        print(f'[ipforward] sysctl persistence: {e}')
+    _set_ip_forward(enabled)
+
+
+def _restore_ip_forward():
+    """After MITM ends, restore ip_forward to the user's configured persistent value."""
+    try:
+        with open(_CONFIG_PATH) as f:
+            cfg = json.load(f)
+    except Exception:
+        cfg = {}
+    _set_ip_forward(cfg.get('ip_forward_persistent', False))
+
+
 def _draw_mitm_screen(lcd, target, dns_on, http_proxy_on, local_ip):
     img  = Image.new('RGB', (128, 128), (0, 0, 0))
     draw = ImageDraw.Draw(img)
@@ -544,7 +617,7 @@ def launch_bettercap(lcd):
                 if mitm_proc:
                     mitm_proc.terminate()
                     mitm_proc = None
-                _set_ip_forward(False)
+                _restore_ip_forward()
                 mitm_on = False
                 subprocess.run(['systemctl', 'start', 'bettercap.service'],
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -554,7 +627,7 @@ def launch_bettercap(lcd):
         if (k1 and not k1w) or (k2 and not k2w) or (k3 and not k3w):
             if mitm_proc:
                 mitm_proc.terminate()
-            _set_ip_forward(False)
+            _restore_ip_forward()
             dash_proc.terminate()
             subprocess.run(
                 ['systemctl', 'stop', 'bettercap.service'],
@@ -594,6 +667,9 @@ def launch_meshbot(lcd):
 def launch_raspyjack(lcd):
     draw_selected(lcd, "RaspyJack", (120, 0, 40))
     time.sleep(0.8)
+    # RaspyJack needs IP forwarding for ARP/MITM techniques — set it now.
+    # Mode-selector will restore the configured persistent value on next restart.
+    _set_ip_forward(True)
     # Release GPIO cleanly so RaspyJack can re-init from scratch
     GPIO.cleanup()
     # exec — replace this process with raspyjack.py
@@ -623,6 +699,15 @@ def launch_meshbot_screensaver(lcd):
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 def main():
+    # Restore ip_forward to the user's configured persistent value on every
+    # startup — this cleans up after RaspyJack (which sets it to 1 on launch).
+    try:
+        with open(_CONFIG_PATH) as f:
+            _startup_cfg = json.load(f)
+    except Exception:
+        _startup_cfg = {}
+    _set_ip_forward(_startup_cfg.get('ip_forward_persistent', False))
+
     # Init hardware
     LCD_Config.GPIO_Init()
     lcd = LCD_1in44.LCD()

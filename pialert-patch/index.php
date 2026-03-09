@@ -68,6 +68,8 @@ if (isset($_REQUEST['get']) && !empty($_REQUEST['get'])) {
 		break;
 	case 'arp-status':getArpStatus();
 		break;
+	case 'arp-reset':resetArpBaseline();
+		break;
 	case 'wifi-status':getWifiStatus();
 		break;
 	case 'wifi-detail':getWifiDetail();
@@ -510,7 +512,32 @@ function getArpStatus() {
 	echo $json;
 	echo "\n";
 }
-// Returns the Wi-Fi RF monitor status written by wifi_monitor_daemon.py.
+
+// Sends SIGUSR1 to arpwatch_daemon.py, resetting the ARP baseline so the
+// current gateway MAC becomes the new expected MAC and all alerts are cleared.
+function resetArpBaseline() {
+	$pid_file = '/tmp/arpwatch_daemon.pid';
+	if (!file_exists($pid_file)) {
+		echo json_encode(['ok' => false, 'error' => 'daemon not running (no PID file)']);
+		echo "\n";
+		return;
+	}
+	$pid = (int) trim(file_get_contents($pid_file));
+	if ($pid <= 0) {
+		echo json_encode(['ok' => false, 'error' => 'invalid PID in file']);
+		echo "\n";
+		return;
+	}
+	if (!posix_kill($pid, SIGUSR1)) {
+		echo json_encode(['ok' => false, 'error' => 'kill(SIGUSR1) failed — daemon may not be running']);
+		echo "\n";
+		return;
+	}
+	echo json_encode(['ok' => true, 'pid' => $pid]);
+	echo "\n";
+}
+
+
 function getWifiStatus() {
 	$f = '/tmp/wifi_status.json';
 	if (!file_exists($f)) {

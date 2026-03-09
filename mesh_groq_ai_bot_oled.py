@@ -84,6 +84,18 @@ PIHOLE_BASE_URL       = _c.get('pihole_base_url', '')   # e.g. 'http://192.168.0
 DNS_SPIKE_THRESHOLD   = _c.get('dns_spike_threshold', 300)  # queries/poll above baseline = alert
 ENABLE_BOT            = _c.get('enable_bot', True)   # False = Pi.Alert/Pi-hole monitor only, no Groq/Meshtastic
 
+# Telemetry monitor — watches a specific node for environment data
+TELEMETRY_NODE               = _c.get('telemetry_monitor_node', '').strip()
+TEMP_HIGH_F                  = float(_c.get('temp_high_f', 90))
+TEMP_LOW_F                   = float(_c.get('temp_low_f', 32))
+HUMIDITY_HIGH                = float(_c.get('humidity_high', 80))
+TELEMETRY_ALERT_COOLDOWN_MIN = int(_c.get('telemetry_alert_cooldown_min', 30))
+
+# Last received telemetry values (updated by on_receive_telemetry, read by _draw_display)
+_telem_temp_f    = None
+_telem_humidity  = None
+_telem_lux       = None
+
 # ==== HAT LCD SETUP ====
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -347,7 +359,17 @@ def _draw_display(status="booting", node_id="", peer_count=0,
 
     now = datetime.now().strftime("%H:%M:%S")
     draw.text((2, y), now, font=F8, fill=(80, 80, 80))
-    draw.text((72, y), "KEY3:backlight", font=F8, fill=(40, 40, 40))
+    if TELEMETRY_NODE and (_telem_temp_f is not None or _telem_humidity is not None):
+        telem_parts = []
+        if _telem_temp_f is not None:
+            telem_parts.append(f"{_telem_temp_f:.0f}F")
+        if _telem_humidity is not None:
+            telem_parts.append(f"{_telem_humidity:.0f}%")
+        if _telem_lux is not None:
+            telem_parts.append(f"{_telem_lux:.0f}lx")
+        draw.text((72, y), " ".join(telem_parts), font=F8, fill=(100, 200, 255))
+    else:
+        draw.text((72, y), "KEY3:backlight", font=F8, fill=(40, 40, 40))
 
     with _lcd_lock:
         _lcd.LCD_ShowImage(img, 0, 0)
@@ -1062,7 +1084,9 @@ class GroqMeshBot:
         self.ai_status              = "ready"
         self.broadcast_count        = 0
         self.broadcast_window_start = datetime.now()
-        pub.subscribe(self.on_receive, "meshtastic.receive.text")
+        self._alert_times           = {}   # cooldown tracker: key → datetime of last alert
+        pub.subscribe(self.on_receive,           "meshtastic.receive.text")
+        pub.subscribe(self.on_receive_telemetry, "meshtastic.receive.telemetry")
         _draw_display(status='booting')
 
     def _peer_count(self):
@@ -1185,7 +1209,82 @@ class GroqMeshBot:
             if not SCREENSAVER_MODE:
                 _draw_display(status='error', last_preview=str(e)[:20])
 
-    def _handle_broadcast(self, text, from_node):
+    def on_receive_telemetry(self, packet, **kwargs):
+        """Handle environment telemetry packets from any node.
+
+        Logs all environment packets for visibility. When the packet is from
+        TELEMETRY_NODE, updates the cached readings and fires DM alerts to
+        ALERT_NODES if any threshold is breached (with per-condition cooldown).
+        """
+        global _telem_temp_f, _telem_humidity
+        try:
+            from_node   = packet.get("from")
+            telemetry   = packet.get("decoded", {}).get("telemetry", {})
+            # Meshtastic's MessageToDict uses camelCase: environmentMetrics
+            environment = telemetry.get("environmentMetrics", {})
+            if not environment:
+                return
+
+            temp_c   = environment.get("temperature")
+            humidity = environment.get("relativeHumidity")
+            lux      = environment.get("lux")
+            iaq      = environment.get("iaq")
+            from_hex = f"!{from_node:08x}" if isinstance(from_node, int) else str(from_node)
+
+            # Log every environment packet so you can verify the node is reachable
+            extras = []
+            if lux      is not None: extras.append(f"lux={lux:.0f}")
+            if iaq      is not None: extras.append(f"iaq={iaq:.0f}")
+            print(f"[Telemetry] {from_hex}  temp={temp_c}°C  humidity={humidity}%  {' '.join(extras)}")
+
+            if not TELEMETRY_NODE or from_hex != TELEMETRY_NODE:
+                return
+
+            # Cache latest readings for LCD display
+            global _telem_temp_f, _telem_humidity, _telem_lux
+            if temp_c   is not None:
+                _telem_temp_f   = temp_c * 9.0 / 5.0 + 32.0
+            if humidity is not None:
+                _telem_humidity = humidity
+            if lux      is not None:
+                _telem_lux      = lux
+
+            # Threshold checks
+            now    = datetime.now()
+            alerts = []
+            if temp_c is not None:
+                temp_f = temp_c * 9.0 / 5.0 + 32.0
+                if temp_f >= TEMP_HIGH_F and self._telemetry_cooldown_ok("temp_high", now):
+                    alerts.append(f"TEMP HIGH: {temp_f:.1f}F (>{TEMP_HIGH_F:.0f}F)")
+                elif temp_f <= TEMP_LOW_F and self._telemetry_cooldown_ok("temp_low", now):
+                    alerts.append(f"TEMP LOW: {temp_f:.1f}F (<{TEMP_LOW_F:.0f}F)")
+            if humidity is not None and humidity >= HUMIDITY_HIGH \
+                    and self._telemetry_cooldown_ok("humidity_high", now):
+                alerts.append(f"HUMIDITY HIGH: {humidity:.0f}% (>{HUMIDITY_HIGH:.0f}%)")
+
+            for alert_msg in alerts:
+                full = f"[SENSOR {TELEMETRY_NODE}] {alert_msg}"
+                print(f"[Telemetry] ALERT: {full}")
+                if self.interface:
+                    for node in ALERT_NODES:
+                        try:
+                            self.interface.sendText(full, destinationId=node)
+                            print(f"[Telemetry] DM -> {node}")
+                        except Exception as e:
+                            print(f"[Telemetry] DM error: {e}")
+
+        except Exception as e:
+            print(f"[Telemetry] on_receive_telemetry error: {e}")
+
+    def _telemetry_cooldown_ok(self, key, now):
+        """Return True and record time if enough time has passed since last alert for this key."""
+        last = self._alert_times.get(key)
+        if last is None or (now - last).total_seconds() >= TELEMETRY_ALERT_COOLDOWN_MIN * 60:
+            self._alert_times[key] = now
+            return True
+        return False
+
+
         """Reply to open-channel messages with canned responses.
 
         Daily limit controlled by BROADCAST_DAILY_MAX (0 = silent, 1-3 = active).

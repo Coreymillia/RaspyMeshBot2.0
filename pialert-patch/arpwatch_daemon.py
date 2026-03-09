@@ -359,6 +359,14 @@ def main():
 
     print(f"[arpwatch] Sniffing on {args.iface}  →  {_alert_file}", flush=True)
 
+    # Write PID file so index.php can signal us
+    _pid_file = "/tmp/arpwatch_daemon.pid"
+    try:
+        with open(_pid_file, "w") as _pf:
+            _pf.write(str(os.getpid()) + "\n")
+    except Exception as _e:
+        print(f"[arpwatch] PID file write failed: {_e}", flush=True)
+
     # Write initial empty state
     _write_flag.set()
     t = threading.Thread(target=_writer_thread, daemon=True)
@@ -366,9 +374,33 @@ def main():
 
     def _sigterm(sig, frame):
         print("[arpwatch] SIGTERM — exiting.", flush=True)
+        try:
+            os.unlink(_pid_file)
+        except Exception:
+            pass
         sys.exit(0)
 
+    def _sigusr1(sig, frame):
+        """Reset the ARP baseline — called by 'arp-reset' from the CYD."""
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        print(f"[arpwatch] {now_str}  Baseline reset requested (SIGUSR1)", flush=True)
+        with _lock:
+            # Re-anchor: current MAC becomes the new expected truth
+            cur = _stats["gateway_mac_current"]
+            if cur:
+                _stats["gateway_mac_expected"] = cur
+            # Clear all counters and alert history
+            _stats["gateway_mac_changes"]  = 0
+            _stats["duplicate_arp_count"]  = 0
+            _stats["last_anomaly"]         = "none"
+            _stats["last_anomaly_ts"]      = ""
+            _alerts.clear()
+            _ip_table.clear()   # forget old MAC history so changes don't re-trigger
+        _write_flag.set()
+        print(f"[arpwatch] Baseline reset complete. New EXP MAC: {cur or '(unknown)'}", flush=True)
+
     signal.signal(signal.SIGTERM, _sigterm)
+    signal.signal(signal.SIGUSR1, _sigusr1)
 
     sniff(
         iface=args.iface,
