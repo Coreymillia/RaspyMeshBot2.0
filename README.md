@@ -48,7 +48,7 @@ Boot the Pi, pick your mode on the screen with a button press. Press the **joyst
 | *RaspyJack loading — the T190 still shows the last mesh message received* | *RaspyJack security toolkit menu: Reverse Shell, Responder, MITM, DNS Spoofing and more* |
 
 ---
-
+NOTE: You are supposed to use RaspyJack with the Ethernet hat. I noticed this shortly AFTER installing it. This will be probably be fixed soon. I have not messed with it a lot as this is mostly my Bot project. Installed for testing purposes against my own software. Installation is optional.  
 ## Modes
 
 | Key | Mode | What it does |
