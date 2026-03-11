@@ -1284,7 +1284,7 @@ class GroqMeshBot:
             return True
         return False
 
-
+    def _handle_broadcast(self, text, from_node):
         """Reply to open-channel messages with canned responses.
 
         Daily limit controlled by BROADCAST_DAILY_MAX (0 = silent, 1-3 = active).
