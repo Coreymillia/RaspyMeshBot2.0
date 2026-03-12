@@ -15,3 +15,6 @@ meshbot.log
 
 # OS
 .DS_Store
+
+# PlatformIO build artifacts
+.pio/

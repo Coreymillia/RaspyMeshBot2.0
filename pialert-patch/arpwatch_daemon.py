@@ -9,8 +9,8 @@ Writes /tmp/arp_status.json with a full network health snapshot:
   duplicate_arp_count — lifetime count of IP→MAC collisions since boot
   gateway_mac_changes — lifetime count of gateway MAC changes since boot
   last_anomaly / last_anomaly_ts
-  top_talkers     — [{ip, count}, …]  top 5 by packet volume
-  last_events     — [{ip, mac, type, ts}, …]  rolling buffer of last 5 ARPs
+  top_talkers     — [{ip, name, count}, …]  top 5 by packet volume
+  last_events     — [{ip, name, mac, type, ts}, …]  rolling buffer of last 5 ARPs
   alerts          — [{type, ip, old_mac, new_mac, time}, …]  last 10 anomalies
 
 Alert types:
@@ -22,6 +22,9 @@ Status thresholds:
   anomaly  — gateway MAC changed OR current ≠ expected OR rate > ANOMALY_RATE (2000 pkt/min)
   warning  — rate > WARN_RATE (500 pkt/min) OR any duplicate_arp_count > 0
   ok       — everything else
+
+Reset: write /tmp/arpwatch_reset_flag (any user, no signal permission needed).
+       Daemon picks it up within WRITE_INTERVAL seconds and resets all counters.
 
 Note: Pi.Alert's own ARP scanner generates significant traffic (~50-200 pkt/min bursts).
       Thresholds are set well above that to avoid false positives.
@@ -90,6 +93,8 @@ _stats = {
 
 _write_flag  = threading.Event()   # signals writer thread
 _alert_file  = "/tmp/arp_status.json"
+_reset_flag  = "/tmp/arpwatch_reset_flag"  # any user can touch this to trigger a reset
+_db_path     = ""                          # set in main() from --db arg
 
 # ---------------------------------------------------------------------------
 # Startup helpers
@@ -126,6 +131,27 @@ def _query_expected_mac(gateway_ip, db_path):
         print(f"[arpwatch] DB lookup error: {exc}", flush=True)
         return None
 
+
+def _query_device_name(ip):
+    """Return the friendly device name for an IP from Pi.Alert DB, or empty string."""
+    if not _db_path or not os.path.exists(_db_path):
+        return ""
+    try:
+        conn = sqlite3.connect(f"file:{_db_path}?mode=ro", uri=True, timeout=3)
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT dev_Name FROM Devices "
+            "WHERE dev_LastIP=? AND dev_Archived=0 LIMIT 1",
+            (ip,),
+        )
+        row = cur.fetchone()
+        conn.close()
+        if row and row[0] and row[0] not in ("(unknown)", "unknown", ""):
+            return row[0]
+        return ""
+    except Exception:
+        return ""
+
 # ---------------------------------------------------------------------------
 # Atomic file write (called WITHOUT _lock held)
 # ---------------------------------------------------------------------------
@@ -151,10 +177,37 @@ def _atomic_write(payload_str):
 # Writer thread — builds JSON snapshot every WRITE_INTERVAL s or on demand
 # ---------------------------------------------------------------------------
 
+def _apply_reset():
+    """Reset ARP baseline — called from writer thread when flag file is found."""
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[arpwatch] {now_str}  Baseline reset (flag file)", flush=True)
+    with _lock:
+        cur = _stats["gateway_mac_current"]
+        if cur:
+            _stats["gateway_mac_expected"] = cur
+        _stats["gateway_mac_changes"]  = 0
+        _stats["duplicate_arp_count"]  = 0
+        _stats["last_anomaly"]         = "none"
+        _stats["last_anomaly_ts"]      = ""
+        _alerts.clear()
+        _ip_table.clear()
+    _write_flag.set()
+    print(f"[arpwatch] Reset complete. EXP MAC: {cur or '(unknown)'}", flush=True)
+
+
 def _writer_thread():
     while True:
         _write_flag.wait(timeout=WRITE_INTERVAL)
         _write_flag.clear()
+
+        # Check for reset flag written by index.php (flag file avoids signal permission issues)
+        if os.path.exists(_reset_flag):
+            try:
+                os.unlink(_reset_flag)
+            except Exception:
+                pass
+            _apply_reset()
+            continue  # rebuild JSON immediately after reset
 
         now_mono = time.monotonic()
         with _lock:
@@ -190,15 +243,26 @@ def _writer_thread():
             _stats["status_reason"] = reason
             _stats["arp_rate"]      = round(rate, 1)
 
-            # Build top-talkers list
+            # Build top-talkers list and snapshot events
             top = sorted(_talkers.items(), key=lambda x: x[1], reverse=True)
-            talkers_out = [{"ip": ip, "count": cnt} for ip, cnt in top[:MAX_TALKERS]]
+            talkers_snap = [(ip, cnt) for ip, cnt in top[:MAX_TALKERS]]
+            events_snap  = list(_events)
 
-            # Snapshot
             payload = dict(_stats)
-            payload["top_talkers"] = talkers_out
-            payload["last_events"] = list(_events)
-            payload["alerts"]      = list(_alerts)
+            payload["alerts"] = list(_alerts)
+
+        # Enrich with device names (DB I/O outside the lock)
+        all_ips = set(ip for ip, _ in talkers_snap) | set(e["ip"] for e in events_snap)
+        names   = {ip: _query_device_name(ip) for ip in all_ips}
+
+        talkers_out = [{"ip": ip, "name": names.get(ip, ""), "count": cnt}
+                       for ip, cnt in talkers_snap]
+        events_out  = [{"ip": e["ip"], "name": names.get(e["ip"], ""),
+                        "mac": e["mac"], "type": e["type"], "ts": e["ts"]}
+                       for e in events_snap]
+
+        payload["top_talkers"] = talkers_out
+        payload["last_events"] = events_out
 
         _atomic_write(json.dumps(payload))
 
@@ -331,8 +395,9 @@ def main():
                         help="Output JSON path (default: /tmp/arp_status.json)")
     args = parser.parse_args()
 
-    global _alert_file
+    global _alert_file, _db_path
     _alert_file = args.out
+    _db_path    = args.db
 
     gateway_ip = args.gateway or _get_default_gateway()
     if gateway_ip:
@@ -381,23 +446,12 @@ def main():
         sys.exit(0)
 
     def _sigusr1(sig, frame):
-        """Reset the ARP baseline — called by 'arp-reset' from the CYD."""
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        print(f"[arpwatch] {now_str}  Baseline reset requested (SIGUSR1)", flush=True)
-        with _lock:
-            # Re-anchor: current MAC becomes the new expected truth
-            cur = _stats["gateway_mac_current"]
-            if cur:
-                _stats["gateway_mac_expected"] = cur
-            # Clear all counters and alert history
-            _stats["gateway_mac_changes"]  = 0
-            _stats["duplicate_arp_count"]  = 0
-            _stats["last_anomaly"]         = "none"
-            _stats["last_anomaly_ts"]      = ""
-            _alerts.clear()
-            _ip_table.clear()   # forget old MAC history so changes don't re-trigger
+        """Reset via SIGUSR1 — writes the flag file so the writer thread handles it cleanly."""
+        try:
+            open(_reset_flag, "w").close()
+        except Exception:
+            pass
         _write_flag.set()
-        print(f"[arpwatch] Baseline reset complete. New EXP MAC: {cur or '(unknown)'}", flush=True)
 
     signal.signal(signal.SIGTERM, _sigterm)
     signal.signal(signal.SIGUSR1, _sigusr1)

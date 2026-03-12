@@ -12,8 +12,6 @@
  *
  * Pi bot runs HTTP server on port 8766.
  * CYD polls GET /messages every 5 seconds.
- *
- * NON-INVERTED build — uses Arduino_HWSPI, no invertDisplay().
  */
 
 #include <Arduino.h>
@@ -22,19 +20,18 @@
 #include <SPI.h>
 #include <WiFi.h>
 
-// ---- Display pins (CYD standard) — hardware SPI for non-inverted panels ----
+// ---- Display pins (CYD standard) ----
 #define GFX_BL 21
-Arduino_DataBus *bus = new Arduino_HWSPI(2 /* DC */, 15 /* CS */, 14 /* SCK */, 13 /* MOSI */, 12 /* MISO */);
+Arduino_DataBus *bus = new Arduino_ESP32SPI(2, 15, 14, 13, 12);
 Arduino_GFX *gfx = new Arduino_ILI9341(bus, GFX_NOT_DEFINED, 1 /* landscape */);
 
 // ---- Touch pins (CYD standard) ----
-#define XPT2046_IRQ  36
 #define XPT2046_CS   33
 #define XPT2046_CLK  25
 #define XPT2046_MOSI 32
 #define XPT2046_MISO 39
 SPIClass touchSPI(VSPI);
-XPT2046_Touchscreen ts(XPT2046_CS, XPT2046_IRQ);
+XPT2046_Touchscreen ts(XPT2046_CS);  // no TIRQ — use polling mode
 
 // ---- Settings + fetch ----
 #include "Portal.h"
@@ -50,6 +47,7 @@ XPT2046_Touchscreen ts(XPT2046_CS, XPT2046_IRQ);
 #define COL_SYSTEM     0xFC60   // orange — Pi-Alert system alert
 #define COL_SENSOR     0xFFE0   // yellow — telemetry/sensor alert
 #define COL_GREY       0x6B4D   // dim grey for meta info
+#define COL_NAV        0x4228   // very dim nav hint
 
 // ---- Layout ----
 #define SCREEN_W    320
@@ -277,7 +275,7 @@ void setup() {
     if (!gfx->begin()) {
         Serial.println("gfx->begin() failed!");
     }
-    // No invertDisplay() — standard non-inverted panel
+    gfx->invertDisplay(true);
     gfx->fillScreen(COL_BG);
 
     pinMode(GFX_BL, OUTPUT);

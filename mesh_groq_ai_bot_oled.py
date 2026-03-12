@@ -72,7 +72,7 @@ def _cfg():
         return {}
 
 _c = _cfg()
-PIALERT_BASE_URL   = _c.get('pialert_base_url', 'http://192.168.0.105/pialert/api/')
+PIALERT_BASE_URL   = _c.get('pialert_base_url', 'http://192.168.0.103/pialert/api/')
 PIALERT_API_KEY    = _c.get('pialert_api_key', '')
 PIALERT_POLL_S     = 60    # seconds between Pi.Alert polls
 SCREENSAVER_IDLE_S = 300   # 5 minutes idle → activate matrix rain
@@ -81,8 +81,9 @@ ALERT_NODES = _alert_raw if isinstance(_alert_raw, list) else [_alert_raw]
 SERIAL_PORT        = _c.get('serial_port', None)   # None = auto-detect
 BROADCAST_DAILY_MAX = _c.get('broadcast_daily_max', 3)  # 0=silent, 1-3 broadcast replies/day
 
-# Pi-hole integration — no API key required for v6 public endpoints
-PIHOLE_BASE_URL       = _c.get('pihole_base_url', '')   # e.g. 'http://192.168.0.103/api'
+# Pi-hole integration — v6 requires password auth (POST /api/auth → session sid)
+PIHOLE_BASE_URL       = _c.get('pihole_base_url', '')   # e.g. 'http://192.168.0.103:8080/api'
+PIHOLE_PASSWORD       = _c.get('pihole_password', '')   # Pi-hole admin password
 DNS_SPIKE_THRESHOLD   = _c.get('dns_spike_threshold', 300)  # queries/poll above baseline = alert
 ENABLE_BOT            = _c.get('enable_bot', True)   # False = Pi.Alert/Pi-hole monitor only, no Groq/Meshtastic
 
@@ -129,6 +130,129 @@ try:
     print("[HAT] Waveshare 1.44\" LCD initialised")
 except Exception as _e:
     print(f"[HAT] LCD init failed: {_e}  — display-less mode")
+
+# ==== RGB LED STATUS INDICATOR ====
+# GPIO 17 = Red, 27 = Green, 22 = Blue  (common-cathode, 220Ω resistors)
+# Runs as a background thread; call rgb_set_mode() to change state from anywhere.
+
+_RGB_RED   = 17
+_RGB_GREEN = 27
+_RGB_BLUE  = 22
+
+_rgb_ok   = False
+_rgb_mode = "boot"        # current mode name
+_rgb_lock = threading.Lock()
+
+# Mode definitions: (r, g, b, style, period_s)
+# style: "solid" | "breathe" | "blink" | "fast_blink" | "pulse"
+_RGB_MODES = {
+    "boot":        (100,  50,   0, "breathe",    2.0),   # warm amber breathe on startup
+    "normal":      (  0, 100,   0, "breathe",    4.0),   # slow green breathe = all good
+    "message":     (  0,   0, 100, "pulse",      0.3),   # quick blue flash = incoming DM
+    "anomaly":     (100,  40,   0, "fast_blink", 0.2),   # orange fast blink = anomaly
+    "offline":     (100,   0,   0, "blink",      0.6),   # red blink = Pi.Alert offline
+    "ai_busy":     (100, 100,   0, "breathe",    1.0),   # yellow breathe = AI thinking
+    "error":       (100,   0,   0, "solid",      0.0),   # solid red = hard error
+}
+
+def rgb_set_mode(mode, hold_s=0):
+    """Switch RGB LED to named mode. If hold_s > 0, revert to 'normal' after hold_s seconds."""
+    global _rgb_mode
+    if not _rgb_ok:
+        return
+    with _rgb_lock:
+        _rgb_mode = mode
+    if hold_s > 0:
+        def _revert():
+            global _rgb_mode
+            time.sleep(hold_s)
+            with _rgb_lock:
+                if _rgb_mode == mode:
+                    _rgb_mode = "normal"
+        threading.Thread(target=_revert, daemon=True).start()
+
+def _rgb_thread():
+    """Background thread driving the RGB LED based on _rgb_mode."""
+    import math
+    t = 0.0
+    while True:
+        with _rgb_lock:
+            mode = _rgb_mode
+        cfg = _RGB_MODES.get(mode, _RGB_MODES["normal"])
+        r_max, g_max, b_max, style, period = cfg
+
+        if style == "solid":
+            _rgb_pwm_set(r_max, g_max, b_max)
+            time.sleep(0.05)
+
+        elif style == "breathe":
+            # Sine wave 0→1→0 over period
+            brightness = (math.sin(math.pi * t / period) ** 2)
+            _rgb_pwm_set(r_max * brightness, g_max * brightness, b_max * brightness)
+            t += 0.05
+            if t >= period:
+                t = 0.0
+            time.sleep(0.05)
+
+        elif style == "blink":
+            on = (t % period) < (period / 2)
+            _rgb_pwm_set(r_max if on else 0, g_max if on else 0, b_max if on else 0)
+            t += 0.05
+            if t >= period:
+                t = 0.0
+            time.sleep(0.05)
+
+        elif style == "fast_blink":
+            on = (t % period) < (period / 2)
+            _rgb_pwm_set(r_max if on else 0, g_max if on else 0, b_max if on else 0)
+            t += 0.05
+            if t >= period:
+                t = 0.0
+            time.sleep(0.05)
+
+        elif style == "pulse":
+            # Single sharp flash then off for the rest of the period
+            flash = (t % period) < 0.1
+            _rgb_pwm_set(r_max if flash else 0, g_max if flash else 0, b_max if flash else 0)
+            t += 0.05
+            if t >= period:
+                t = 0.0
+            time.sleep(0.05)
+
+        # Reset phase counter when mode changes
+        with _rgb_lock:
+            if _rgb_mode != mode:
+                t = 0.0
+
+def _rgb_pwm_set(r, g, b):
+    try:
+        _rgb_red_pwm.ChangeDutyCycle(max(0, min(100, r)))
+        _rgb_grn_pwm.ChangeDutyCycle(max(0, min(100, g)))
+        _rgb_blu_pwm.ChangeDutyCycle(max(0, min(100, b)))
+    except Exception:
+        pass
+
+if _c.get('enable_rgb_led', False):
+    try:
+        import RPi.GPIO as GPIO
+        GPIO.setwarnings(False)
+        GPIO.setmode(GPIO.BCM)
+        GPIO.setup(_RGB_RED,   GPIO.OUT)
+        GPIO.setup(_RGB_GREEN, GPIO.OUT)
+        GPIO.setup(_RGB_BLUE,  GPIO.OUT)
+        _rgb_red_pwm = GPIO.PWM(_RGB_RED,   1000)
+        _rgb_grn_pwm = GPIO.PWM(_RGB_GREEN, 1000)
+        _rgb_blu_pwm = GPIO.PWM(_RGB_BLUE,  1000)
+        _rgb_red_pwm.start(0)
+        _rgb_grn_pwm.start(0)
+        _rgb_blu_pwm.start(0)
+        _rgb_ok = True
+        threading.Thread(target=_rgb_thread, daemon=True).start()
+        print("[RGB] LED indicator initialised (GPIO 17/27/22)")
+    except Exception as _rgb_e:
+        print(f"[RGB] LED init failed: {_rgb_e} — continuing without RGB")
+else:
+    print("[RGB] LED disabled (set enable_rgb_led: true in config.json to enable)")
 
 # ── Fonts ────────────────────────────────────────────────────────────────────
 def _font(size, bold=False):
@@ -543,13 +667,50 @@ def _draw_pa_wifi(draw, data):
         draw.text((4, y), f"{sec}  score:{score}", font=F7, fill=s_col); y += 11
 
 
+_pihole_sid_cache = {'sid': None, 'expires': 0}
+
+def _pihole_get_sid():
+    """Return a valid Pi-hole v6 session token, re-authenticating if needed."""
+    import time
+    if not PIHOLE_BASE_URL or not PIHOLE_PASSWORD:
+        return None
+    now = time.time()
+    if _pihole_sid_cache['sid'] and now < _pihole_sid_cache['expires']:
+        return _pihole_sid_cache['sid']
+    try:
+        auth_url = f"{PIHOLE_BASE_URL.rstrip('/')}/auth"
+        r = requests.post(auth_url, json={'password': PIHOLE_PASSWORD}, timeout=8)
+        r.raise_for_status()
+        sid = r.json().get('session', {}).get('sid')
+        if sid:
+            _pihole_sid_cache['sid'] = sid
+            _pihole_sid_cache['expires'] = now + 1500  # refresh before 30-min expiry
+            print("[PiHole] Auth OK — new session token acquired")
+        return sid
+    except Exception as e:
+        print(f"[PiHole] Auth error: {e}")
+        return None
+
+
 def _pihole_fetch(endpoint):
-    """Fetch one Pi-hole v6 API endpoint (no auth required). Returns JSON or None."""
+    """Fetch one Pi-hole v6 API endpoint with session-token auth. Returns JSON or None."""
     if not PIHOLE_BASE_URL:
         return None
     try:
         url = f"{PIHOLE_BASE_URL.rstrip('/')}/{endpoint.lstrip('/')}"
-        r = requests.get(url, timeout=8)
+        headers = {}
+        sid = _pihole_get_sid()
+        if sid:
+            headers['sid'] = sid
+        r = requests.get(url, headers=headers, timeout=8)
+        if r.status_code == 401:
+            # Token expired — force re-auth and retry once
+            _pihole_sid_cache['sid'] = None
+            _pihole_sid_cache['expires'] = 0
+            sid = _pihole_get_sid()
+            if sid:
+                headers['sid'] = sid
+            r = requests.get(url, headers=headers, timeout=8)
         r.raise_for_status()
         return r.json()
     except Exception as e:
@@ -742,7 +903,10 @@ def _pialert_poller_thread(bot):
                     _pialert_data.update(new_data)
                 online = new_data.get('system-status', {}).get('Online_Devices', '?')
                 print(f"[PiAlert] Refreshed — online:{online}")
+                rgb_set_mode("normal")
                 _check_anomalies(bot, new_data)
+            else:
+                rgb_set_mode("offline")
 
             # Pi-hole polling (same interval, best-effort)
             if PIHOLE_BASE_URL:
@@ -908,6 +1072,7 @@ def _fire_anomaly(bot, title, lines, target_view):
     print(f"[PiAlert] ANOMALY: {title} — {lines}")
     _current_view = target_view
     _mark_activity()
+    rgb_set_mode("anomaly", hold_s=30)
 
     def _show():
         if SCREENSAVER_MODE:
@@ -1248,6 +1413,7 @@ class GroqMeshBot:
                 self.last_sender = f"!{from_node:08x}"[-8:]
 
             self.ai_status = "busy"
+            rgb_set_mode("ai_busy")
             if not SCREENSAVER_MODE:
                 self.update_display(status='ai_busy')
 
@@ -1255,6 +1421,7 @@ class GroqMeshBot:
             print(f"AI reply: {ai_reply}")
 
             self.ai_status = "ready"
+            rgb_set_mode("message", hold_s=5)
             send_long_message(self.interface, ai_reply, from_node)
             print(f"Sent DM to {from_node}")
             _push_cyd_msg("dm", self.last_sender, ai_reply)
@@ -1383,6 +1550,7 @@ class GroqMeshBot:
     def run(self):
         self.connect()
         print("Groq AI MeshBot ready!" if ENABLE_BOT else "Pi.Alert Monitor ready (bot disabled)!")
+        rgb_set_mode("boot", hold_s=12)   # amber breathe during startup, then settle to normal
 
         if SCREENSAVER_MODE or not ENABLE_BOT:
             print("[SAVER] Mode 3: Pi.Alert monitor + idle matrix rain screensaver")

@@ -7,6 +7,7 @@
 - 🧱 **Pi-hole DNS analytics** with query stats and spike detection
 - 📬 **Mesh-based alerting** — sends anomaly alerts via Meshtastic DM
 - 🌡️ **Telemetry monitor** — watches a Meshtastic sensor node (BME680 or similar) and DMs you when temperature or humidity thresholds are crossed
+- 📺 **CYD companion display** — ESP32 "Cheap Yellow Display" shows bot DM replies full-screen with a PuTTY-style multi-color terminal palette; touch to navigate messages; auto-jumps to newest on arrival
 - 🖥 **Live LCD dashboard** with device status, temp/humidity, alerts, and matrix rain screensaver
 - 🔐 **Optional RaspyJack security toolkit mode**
 - ⚙ **Built-in web settings portal** — configure everything from a browser
@@ -571,7 +572,61 @@ sudo python3 mode_selector.py
 | `systemd/` | Ready-to-use systemd service files for auto-start on boot |
 | `images/` | Project photos |
 | `pialert-patch/` | Daemon scripts for the Pi.Alert host — ARP watch (with baseline reset), WiFi scan, BLE scan, PHP API bridge |
+| `CYDBotReplies/` | ESP32 PlatformIO project — CYD companion display (non-inverted panels) |
+| `INVERTEDCYDBotReplies/` | ESP32 PlatformIO project — CYD companion display (inverted panels) |
 | `.seen_anomalies.json` | Auto-generated — persists seen anomaly keys across reboots (do not edit) |
+
+---
+
+## CYD Companion Display
+
+The `CYDBotReplies/` and `INVERTEDCYDBotReplies/` folders are ESP32 PlatformIO projects for the **ESP32-2432S028 "Cheap Yellow Display"** — a $10–15 ESP32 dev board with a built-in 320×240 ILI9341 TFT and XPT2046 resistive touchscreen.
+
+Flash one of these to a CYD and it becomes a dedicated wall-mounted display for every Groq AI reply and system alert your bot sends.
+
+### Two builds — same code, different panel type
+
+| Folder | Panel type | Difference |
+|--------|-----------|-----------|
+| `CYDBotReplies/` | Standard (non-inverted) | `Arduino_HWSPI`, no `invertDisplay()`, uses touch IRQ pin 36 |
+| `INVERTEDCYDBotReplies/` | Inverted panels | `Arduino_ESP32SPI`, `invertDisplay(true)`, polling touch |
+
+Try `CYDBotReplies/` first. If colors look washed out or inverted, flash `INVERTEDCYDBotReplies/` instead — it's a quirk of the specific ILI9341 panel batch.
+
+### Features
+
+- **Full-screen message view** — one message fills the entire display minus the header bar
+- **PuTTY-style color palette** — each line cycles through 10 terminal colors (white, green, cyan, yellow, orange, red, magenta, hot pink, lime, sky blue)
+- **Newline-aware word wrap** — Groq paragraph breaks render as real spacing, no jumbled characters
+- **Touch navigation** — touch left half for newer messages, right half for older; newest is always shown first
+- **Auto-jump to newest** — whenever a new message arrives, the display resets to message 1
+- **Message counter** — header shows `< N/Total >` so you always know where you are
+- **Type badges** — `[DM]` (green), `[SYS]` (orange), `[ENV]` (yellow) in the meta line
+- **Captive portal setup** — first boot opens a `BotReplies-Setup` WiFi AP; enter your network + Pi IP in any browser; settings saved to NVS flash
+- **Hold BOOT at startup** to re-open the setup portal at any time
+
+### What it connects to
+
+The CYD polls `GET http://<pi-ip>:8766/messages` every 5 seconds. This endpoint is served by the RaspyMeshBot on the Pi — it returns the latest bot DM replies and system alerts as JSON.
+
+### Building & flashing
+
+Requires [PlatformIO](https://platformio.org/) (VS Code extension or CLI).
+
+```bash
+cd CYDBotReplies        # or INVERTEDCYDBotReplies
+pio run --target upload
+```
+
+### First-time setup
+
+1. Power on the CYD — it will broadcast a WiFi AP named **`BotReplies-Setup`**
+2. Connect to it from any phone or laptop (no password)
+3. Open **`http://192.168.4.1`** in a browser
+4. Enter your WiFi credentials, your Pi's IP address, and port (`8766`)
+5. Tap **Save & Connect** — the CYD reboots and starts displaying messages
+
+To reconfigure later, hold the **BOOT** button while powering on.
 
 ---
 

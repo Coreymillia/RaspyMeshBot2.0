@@ -1,0 +1,14 @@
+[Unit]
+Description=RGB LED Network Status Indicator
+After=network.target arpwatch.service wifi-monitor.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /home/coreymillia/rgb_status_daemon.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

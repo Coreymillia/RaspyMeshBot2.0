@@ -147,7 +147,7 @@ button{{margin-top:24px;width:100%;padding:12px;background:#0a6;color:#fff;borde
 <div class="sec"><h3>Pi.Alert</h3>
 <label>Base URL</label>
 <input type="text" name="pialert_base_url" value="{v('pialert_base_url')}">
-<div class="hint">e.g. http://192.168.0.105/pialert/api/</div>
+<div class="hint">e.g. http://192.168.0.103/pialert/api/</div>
 <label>API Key</label>
 <input type="password" name="pialert_api_key" value="{v('pialert_api_key')}">
 </div>
