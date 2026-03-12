@@ -49,7 +49,7 @@ Boot the Pi, pick your mode on the screen with a button press. Press the **joyst
 | *RaspyJack loading — the T190 still shows the last mesh message received* | *RaspyJack security toolkit menu: Reverse Shell, Responder, MITM, DNS Spoofing and more* |
 
 ---
-
+Note: RaspyJack requires an Ethernet hat and WiFi dongle for full features. Installation is optional. 
 ## Modes
 
 | Key | Mode | What it does |
