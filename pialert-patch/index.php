@@ -513,27 +513,18 @@ function getArpStatus() {
 	echo "\n";
 }
 
-// Sends SIGUSR1 to arpwatch_daemon.py, resetting the ARP baseline so the
-// current gateway MAC becomes the new expected MAC and all alerts are cleared.
+// Triggers an ARP baseline reset by writing a flag file that the daemon
+// picks up in its next write cycle (avoids signal permission issues since
+// the daemon runs as root and this PHP runs as www-data).
 function resetArpBaseline() {
-	$pid_file = '/tmp/arpwatch_daemon.pid';
-	if (!file_exists($pid_file)) {
-		echo json_encode(['ok' => false, 'error' => 'daemon not running (no PID file)']);
+	$flag_file = '/tmp/arpwatch_reset_flag';
+	if (file_put_contents($flag_file, '1') === false) {
+		echo json_encode(['ok' => false, 'error' => 'could not write reset flag to /tmp']);
 		echo "\n";
 		return;
 	}
-	$pid = (int) trim(file_get_contents($pid_file));
-	if ($pid <= 0) {
-		echo json_encode(['ok' => false, 'error' => 'invalid PID in file']);
-		echo "\n";
-		return;
-	}
-	if (!posix_kill($pid, SIGUSR1)) {
-		echo json_encode(['ok' => false, 'error' => 'kill(SIGUSR1) failed — daemon may not be running']);
-		echo "\n";
-		return;
-	}
-	echo json_encode(['ok' => true, 'pid' => $pid]);
+	chmod($flag_file, 0644);
+	echo json_encode(['ok' => true, 'msg' => 'reset flag written — daemon will clear counters within 5s']);
 	echo "\n";
 }
 

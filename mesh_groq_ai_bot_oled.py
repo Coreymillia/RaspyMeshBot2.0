@@ -39,6 +39,8 @@ import meshtastic
 import meshtastic.serial_interface
 import requests
 from PIL import Image, ImageDraw, ImageFont
+import collections
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # ==== CONFIG ====
 import json as _json
@@ -167,6 +169,58 @@ _dns_last_counts = {}   # {ip: count} from previous poll
 
 # Persistent anomaly dedup file — survives reboots
 _SEEN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.seen_anomalies.json')
+
+# ==== CYD BOT REPLIES SERVER ====
+_CYD_PORT         = 8766
+_CYD_MAX_MSGS     = 20
+_cyd_msgs         = collections.deque(maxlen=_CYD_MAX_MSGS)
+_cyd_msg_lock     = threading.Lock()
+_cyd_total_count  = 0    # monotonic counter so CYD detects new messages
+
+
+def _push_cyd_msg(msg_type: str, recipient: str, text: str):
+    """Append a message to the CYD ring buffer."""
+    global _cyd_total_count
+    ts = time.strftime("%H:%M:%S")
+    entry = {"type": msg_type, "to": recipient, "text": text[:255], "ts": ts}
+    with _cyd_msg_lock:
+        _cyd_msgs.appendleft(entry)   # newest at index 0
+        _cyd_total_count += 1
+
+
+class _CYDHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path != "/messages":
+            self.send_response(404)
+            self.end_headers()
+            return
+        with _cyd_msg_lock:
+            payload = _json.dumps({
+                "count":    _cyd_total_count,
+                "messages": list(_cyd_msgs),
+            })
+        body = payload.encode()
+        self.send_response(200)
+        self.send_header("Content-Type",   "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, fmt, *args):
+        pass   # suppress HTTP access logs
+
+
+def _start_cyd_server():
+    """Launch the CYD HTTP server in a daemon thread."""
+    def _run():
+        try:
+            srv = HTTPServer(("0.0.0.0", _CYD_PORT), _CYDHandler)
+            print(f"[CYD] HTTP server on port {_CYD_PORT}")
+            srv.serve_forever()
+        except Exception as exc:
+            print(f"[CYD] Server error: {exc}")
+    t = threading.Thread(target=_run, daemon=True, name="cyd-server")
+    t.start()
 
 
 def _load_seen_anomalies():
@@ -874,6 +928,7 @@ def _fire_anomaly(bot, title, lines, target_view):
                 print(f"[PiAlert] DM -> {node}: {msg}")
         except Exception as e:
             print(f"[PiAlert] DM error: {e}")
+    _push_cyd_msg("system", ",".join(str(n) for n in ALERT_NODES), msg if bot.interface else ("[PI.ALERT] " + title + " | " + " | ".join(lines)))
 
 
 # ==== MATRIX RAIN SCREENSAVER ====
@@ -1202,6 +1257,7 @@ class GroqMeshBot:
             self.ai_status = "ready"
             send_long_message(self.interface, ai_reply, from_node)
             print(f"Sent DM to {from_node}")
+            _push_cyd_msg("dm", self.last_sender, ai_reply)
             _show_reply_bg(self, self.last_sender, ai_reply)
 
         except Exception as e:
@@ -1272,6 +1328,7 @@ class GroqMeshBot:
                             print(f"[Telemetry] DM -> {node}")
                         except Exception as e:
                             print(f"[Telemetry] DM error: {e}")
+                _push_cyd_msg("sensor", ",".join(str(n) for n in ALERT_NODES), full)
 
         except Exception as e:
             print(f"[Telemetry] on_receive_telemetry error: {e}")
@@ -1409,5 +1466,6 @@ class GroqMeshBot:
 
 # ==== MAIN ====
 if __name__ == "__main__":
+    _start_cyd_server()
     bot = GroqMeshBot()
     bot.run()
