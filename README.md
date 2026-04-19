@@ -51,6 +51,15 @@ Boot the Pi, pick your mode on the screen with a button press. Press the **joyst
 
 ---
 Note: RaspyJack requires an Ethernet hat and WiFi dongle for full features. Installation is optional. 
+
+### Why RaspyJack and Bettercap are still here
+
+The main focus of this project is now the **Meshtastic chatbot / meshbot**. RaspyJack and Bettercap remain in the repo because this project originally grew out of experimenting with **limited Pi hardware** and seeing how much could be built onto one device.
+
+They also ended up being useful as **anomaly-detector test tools** — for example, generating network behavior that could trip the Pi.Alert / ARP anomaly pipeline while the meshbot was running. In practice that kind of testing really wants more than one Pi or a dedicated test setup, and we did not try to run everything at once as a polished workflow, but the extra modes are still useful as optional experiments, learning tools, and playground features.
+
+They are no longer the center of the project, but they stay in the repo for people who want to tinker beyond the chatbot itself.
+
 ## Modes
 
 | Key | Mode | What it does |
@@ -267,10 +276,31 @@ Leave `pihole_base_url` empty or omit it to disable Pi-hole integration entirely
 
 ## Hardware
 
-- Raspberry Pi Zero 2 W
-- [Waveshare 1.44" LCD HAT](https://www.waveshare.com/1.44inch-lcd-hat.htm) (128×128 SPI, buttons KEY1/KEY2/KEY3)
-- Meshtastic radio connected via USB — **only tested with the Heltec Vision Master T190**
-- Internet connection on the Pi (for Groq AI replies)
+### Minimum hardware (chatbot only)
+
+| Part | Notes |
+|------|-------|
+| Raspberry Pi Zero 2 W | Main host used for this project |
+| Meshtastic radio over USB | **Tested:** Heltec Vision Master T190, Heltec LoRa32 V3 |
+| Internet connection | Needed for **Groq DM replies** |
+
+### Recommended hardware (full handheld build)
+
+| Part | Notes |
+|------|-------|
+| Raspberry Pi Zero 2 W | Main host |
+| [Waveshare 1.44" LCD HAT](https://www.waveshare.com/1.44inch-lcd-hat.htm) | 128×128 SPI display with KEY1/KEY2/KEY3 + joystick |
+| Meshtastic radio over USB | T190 is the main tested radio for this build |
+
+### Optional hardware / add-ons
+
+| Part | What it helps with |
+|------|---------------------|
+| Ethernet hat | Likely better Internet reliability and potentially more stable monitoring for Pi.Alert / network tools, though this has **not been fully tested** in this project |
+| WiFi dongle | Useful for RaspyJack / Bettercap experiments and multi-interface testing |
+| CYD display | Optional remote wall display for DM replies and system alerts |
+
+> **Reality check:** the chatbot itself does **not** require every extra in this repo. The minimum setup is just the Pi, a supported Meshtastic radio, and Internet access for DM AI replies.
 
 ---
 
