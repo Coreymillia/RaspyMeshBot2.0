@@ -3,12 +3,12 @@ Description=Groq AI Mesh Chatbot
 After=network.target
 
 [Service]
-Environment=PYTHONPATH=/home/YOUR_USER/RaspyMeshBot2.0
+Environment=PYTHONPATH=/home/YOUR_USER/Meshtastic-PiAgent
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/usr/bin/python3 /home/YOUR_USER/RaspyMeshBot2.0/mesh_groq_ai_bot_oled.py
-WorkingDirectory=/home/YOUR_USER/RaspyMeshBot2.0
-StandardOutput=append:/home/YOUR_USER/RaspyMeshBot2.0/meshbot.log
-StandardError=append:/home/YOUR_USER/RaspyMeshBot2.0/meshbot.log
+ExecStart=/usr/bin/python3 /home/YOUR_USER/Meshtastic-PiAgent/mesh_groq_ai_bot_oled.py
+WorkingDirectory=/home/YOUR_USER/Meshtastic-PiAgent
+StandardOutput=append:/home/YOUR_USER/Meshtastic-PiAgent/meshbot.log
+StandardError=append:/home/YOUR_USER/Meshtastic-PiAgent/meshbot.log
 Restart=always
 RestartSec=5
 StartLimitIntervalSec=0

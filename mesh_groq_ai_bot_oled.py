@@ -303,8 +303,9 @@ PA_VIEW_PIHOLE    = 5
 PA_VIEW_MATRIX    = 6
 PA_VIEW_NWS       = 7
 PA_VIEW_MESSAGES  = 8
+PA_VIEW_TEST_TX   = 9
 _current_view     = PA_VIEW_DASHBOARD
-NUM_PA_VIEWS      = 9
+NUM_PA_VIEWS      = 10
 _matrix_active    = False
 _seen_anomalies   = set()
 
@@ -322,6 +323,11 @@ _msg_history       = collections.deque(maxlen=_MSG_HISTORY_MAX)
 _msg_history_lock  = threading.Lock()
 _msg_selected_idx  = 0
 _msg_scroll_offset = 0
+
+# Manual test sender state
+_manual_test_selected_idx = 0
+_manual_test_status = ""
+_manual_test_status_until = 0.0
 
 # DNS spike detection — tracks per-client cumulative query counts between polls
 _DNS_COUNTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.dns_counts.json')
@@ -526,6 +532,27 @@ def _scroll_message(delta):
         return False
     _msg_scroll_offset = new_offset
     return True
+
+
+def _manual_test_message():
+    if not CANNED_MANUAL_TEST:
+        return ""
+    return CANNED_MANUAL_TEST[_manual_test_selected_idx % len(CANNED_MANUAL_TEST)]
+
+
+def _change_manual_test(delta):
+    global _manual_test_selected_idx, _manual_test_status
+    if not CANNED_MANUAL_TEST:
+        return False
+    _manual_test_selected_idx = (_manual_test_selected_idx + delta) % len(CANNED_MANUAL_TEST)
+    _manual_test_status = ""
+    return True
+
+
+def _set_manual_test_status(text, hold_s=3.0):
+    global _manual_test_status, _manual_test_status_until
+    _manual_test_status = text[:24]
+    _manual_test_status_until = time.monotonic() + hold_s
 
 
 # ── Backlight ────────────────────────────────────────────────────────────────
@@ -1009,6 +1036,38 @@ def _draw_pa_messages(draw, data):
     draw.text((56, 115), "L/R msg", font=F7, fill=(80, 80, 80))
 
 
+def _draw_pa_test_tx(draw, data):
+    global _manual_test_status
+    _pa_header(draw, "MESH TEST TX", (0, 90, 110))
+    y = 17
+    if not ENABLE_BOT:
+        draw.text((4, y + 18), "Bot disabled in", font=F8, fill=(160, 160, 160))
+        draw.text((4, y + 30), "config.json", font=F8, fill=(160, 160, 160))
+        draw.text((4, y + 48), "Enable Mesh Bot", font=F8, fill=(100, 200, 255))
+        draw.text((4, y + 60), "to send tests.", font=F8, fill=(100, 200, 255))
+        return
+
+    msg = _manual_test_message()
+    idx = _manual_test_selected_idx + 1 if CANNED_MANUAL_TEST else 0
+    total = len(CANNED_MANUAL_TEST)
+    draw.text((2, y), f"{idx}/{total}", font=F8, fill=(255, 220, 120))
+    draw.text((44, y), "Manual sender", font=F8, fill=(150, 220, 255))
+    y += 10
+    draw.line([(0, y), (128, y)], fill=(40, 40, 40)); y += 4
+
+    for line in textwrap.wrap(msg, width=19)[:5]:
+        draw.text((4, y), line, font=F9, fill=(220, 220, 220))
+        y += 12
+
+    if time.monotonic() > _manual_test_status_until:
+        _manual_test_status = ""
+    if _manual_test_status:
+        draw.text((4, 102), _manual_test_status, font=F8, fill=(100, 220, 120))
+
+    draw.text((2, 115), "L/R pick", font=F7, fill=(80, 80, 80))
+    draw.text((48, 115), "KEY2 send", font=F7, fill=(80, 80, 80))
+
+
 _PA_VIEW_DRAW = [
     _draw_pa_dashboard,
     _draw_pa_online,
@@ -1019,6 +1078,7 @@ _PA_VIEW_DRAW = [
     _draw_pa_matrix,
     _draw_pa_nws,
     _draw_pa_messages,
+    _draw_pa_test_tx,
 ]
 
 
@@ -1167,7 +1227,7 @@ def _pialert_poller_thread(bot):
 
 def _nws_fetch():
     headers = {
-        "User-Agent": "RaspyMeshBot2.0 (github.com/Coreymillia/RaspyMeshBot2.0)",
+        "User-Agent": "Meshtastic-PiAgent (github.com/Coreymillia/Meshtastic-PiAgent)",
         "Accept": "application/geo+json",
     }
     try:
@@ -1558,6 +1618,19 @@ CANNED_SCHEDULED_TEST = [
     "Signal check from Victor, Colorado. Anyone hearing this?",
 ]
 
+CANNED_MANUAL_TEST = [
+    "Open mesh test from Victor, Colorado.",
+    "Victor, Colorado mesh check. Any copy?",
+    "Radio check from Victor, Colorado.",
+    "Victor, Colorado calling with a quick signal check.",
+    "Open mesh status check from Victor, Colorado.",
+    "Victor, Colorado test pulse on the mesh.",
+    "Victor, Colorado station check. Loud and clear?",
+    "Mesh roll call from Victor, Colorado.",
+    "Victor, Colorado node check-in on the open mesh.",
+    "Signal check from Victor, Colorado. Anyone hearing this?",
+]
+
 CANNED_SCHEDULED_TEST_THANKS = [
     "Thanks for the copy from Victor, Colorado.",
     "Appreciate the acknowledgment from Victor, Colorado.",
@@ -1725,8 +1798,7 @@ class GroqMeshBot:
     def _send_scheduled_test(self, now=None):
         now = now or datetime.now()
         msg = random.choice(CANNED_SCHEDULED_TEST)
-        self.interface.sendText(msg)
-        _log_mesh_message("tx", "bcast", "open mesh", msg)
+        self._send_open_mesh_message(msg, peer_label="scheduled test")
         print(f"[SCHED] Sent scheduled mesh test: {msg}")
         with self._scheduled_test_lock:
             self._scheduled_test_state["last_sent_at"] = self._dt_to_str(now)
@@ -1776,14 +1848,37 @@ class GroqMeshBot:
 
         thanks = random.choice(CANNED_SCHEDULED_TEST_THANKS)
         peer_label = _node_label(self.interface, from_node)
-        self.interface.sendText(thanks)
-        _log_mesh_message("tx", "bcast", peer_label, thanks)
+        self._send_open_mesh_message(thanks, peer_label=peer_label)
         print(f"[SCHED] Ack from {peer_label}; sent thanks")
         with self._scheduled_test_lock:
             self._scheduled_test_state["awaiting_ack"] = False
             self._scheduled_test_state["ack_deadline"] = ""
         self._save_scheduled_test_state()
         return True
+
+    def _send_open_mesh_message(self, text, peer_label="open mesh"):
+        if not self.interface:
+            raise RuntimeError("Meshtastic interface not connected")
+        self.interface.sendText(text)
+        _log_mesh_message("tx", "bcast", peer_label, text)
+
+    def send_manual_test_message(self):
+        msg = _manual_test_message()
+        if not msg:
+            _set_manual_test_status("No test messages")
+            return False
+        if not self.interface:
+            _set_manual_test_status("Radio offline")
+            return False
+        try:
+            self._send_open_mesh_message(msg, peer_label="manual test")
+            _set_manual_test_status("Sent to open mesh")
+            print(f"[MANUAL] Sent mesh test: {msg}")
+            return True
+        except Exception as e:
+            _set_manual_test_status("Send failed")
+            print(f"[MANUAL] send error: {e}")
+            return False
 
     def _peer_count(self):
         try:
@@ -2027,8 +2122,7 @@ class GroqMeshBot:
         self.broadcast_count += 1
         print(f"Broadcast reply ({self.broadcast_count}/{BROADCAST_DAILY_MAX} today): {reply}")
         try:
-            self.interface.sendText(reply)
-            _log_mesh_message("tx", "bcast", _node_label(self.interface, from_node), reply)
+            self._send_open_mesh_message(reply, peer_label=_node_label(self.interface, from_node))
         except Exception as e:
             print(f"Broadcast send error: {e}")
 
@@ -2098,10 +2192,15 @@ class GroqMeshBot:
                         self.update_display(status='ok')
 
                     if k2 and not key2_was_low and MODE3_ACTIVE:
-                        _set_current_view(PA_VIEW_DASHBOARD)
                         _mark_activity()
-                        _show_current_view()
-                        print("[BTN] KEY2: dashboard")
+                        if _current_view == PA_VIEW_TEST_TX:
+                            self.send_manual_test_message()
+                            _draw_pialert_view()
+                            print("[BTN] KEY2: send manual test")
+                        else:
+                            _set_current_view(PA_VIEW_DASHBOARD)
+                            _show_current_view()
+                            print("[BTN] KEY2: dashboard")
 
                     if k3 and not key3_was_low:
                         _toggle_backlight()
@@ -2126,6 +2225,16 @@ class GroqMeshBot:
                             _mark_activity()
                             _draw_pialert_view()
                             print(f"[BTN] JOY_DOWN: scroll -> {_msg_scroll_offset}")
+
+                    if MODE3_ACTIVE and _current_view == PA_VIEW_TEST_TX:
+                        if jl and not jl_was_low and _change_manual_test(-1):
+                            _mark_activity()
+                            _draw_pialert_view()
+                            print(f"[BTN] JOY_LEFT: manual test -> {_manual_test_selected_idx}")
+                        if jr and not jr_was_low and _change_manual_test(1):
+                            _mark_activity()
+                            _draw_pialert_view()
+                            print(f"[BTN] JOY_RIGHT: manual test -> {_manual_test_selected_idx}")
 
                     # Joystick hold → reboot prompt
                     joy = GPIO.input(JOY_PRESS_PIN) == GPIO.LOW

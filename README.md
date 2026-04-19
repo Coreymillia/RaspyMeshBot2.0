@@ -1,4 +1,4 @@
-# RaspyMeshBot 2.0
+# Meshtastic PiAgent
 ## Key Features
 
 - 🤖 **MeshBot for Meshtastic** — Groq-powered DM replies plus a lively open-mesh personality with canned greetings, test acknowledgments, cryptic replies, and scheduled check-ins
@@ -356,8 +356,8 @@ On first power-on, `meshbot.service` sometimes loses a race with the USB serial 
 ### 1. Clone this repo
 
 ```bash
-git clone https://github.com/Coreymillia/RaspyMeshBot2.0.git
-cd RaspyMeshBot2.0
+git clone https://github.com/Coreymillia/Meshtastic-PiAgent.git
+cd Meshtastic-PiAgent
 ```
 
 ### 2. Install dependencies
@@ -628,7 +628,7 @@ Try `CYDBotReplies/` first. If colors look washed out or inverted, flash `INVERT
 
 ### What it connects to
 
-The CYD polls `GET http://<pi-ip>:8766/messages` every 5 seconds. This endpoint is served by the RaspyMeshBot on the Pi — it returns the latest bot DM replies and system alerts as JSON.
+The CYD polls `GET http://<pi-ip>:8766/messages` every 5 seconds. This endpoint is served by the Meshtastic PiAgent on the Pi — it returns the latest bot DM replies and system alerts as JSON.
 
 ### Building & flashing
 

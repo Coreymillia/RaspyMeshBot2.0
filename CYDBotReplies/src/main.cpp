@@ -1,5 +1,5 @@
 /**
- * CYDBotReplies — Displays Groq AI DM replies and system alerts from RaspyMeshBot2.0
+ * CYDBotReplies — Displays Groq AI DM replies and system alerts from Meshtastic PiAgent
  *
  * Hardware: ESP32 "Cheap Yellow Display" (ESP32-2432S028)
  *   - ILI9341 320x240 TFT (landscape)
