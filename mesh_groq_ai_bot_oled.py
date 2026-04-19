@@ -3,13 +3,13 @@
 Groq AI MeshBot with Waveshare 1.44" LCD HAT Display
 -----------------------------------------------------
 Mode 1 (default): Live mesh status screen on LCD.
-Mode 3 (SCREENSAVER_MODE): Pi.Alert network monitor dashboard with
-  rule-based anomaly alerter. Sends DM to ALERT_NODE on anomalies.
-  Matrix rain screensaver activates after SCREENSAVER_IDLE_S of inactivity.
+Mode 3 (SCREENSAVER_MODE): Main LCD UI with Pi.Alert dashboard views,
+  selectable matrix rain, NWS forecast, and message history.
+  Pi.Alert anomalies still wake the relevant view and send DMs.
 
 Mode 3 button layout (HAT buttons, active LOW):
-  KEY1 (BCM 21): cycle Pi.Alert views
-  KEY2 (BCM 20): wake screensaver / force Pi.Alert display
+  KEY1 (BCM 21): cycle Mode 3 views
+  KEY2 (BCM 20): jump back to Pi.Alert dashboard
   KEY3 (BCM 16): toggle backlight
 """
 
@@ -34,7 +34,7 @@ if not hasattr(pub, "_original_sendMessage"):
     pub._original_sendMessage = pub.sendMessage
     pub.sendMessage = safe_sendMessage
 
-import time, sys, os, threading, random
+import time, sys, os, threading, random, textwrap
 import meshtastic
 import meshtastic.serial_interface
 import requests
@@ -75,7 +75,6 @@ _c = _cfg()
 PIALERT_BASE_URL   = _c.get('pialert_base_url', 'http://192.168.0.103/pialert/api/')
 PIALERT_API_KEY    = _c.get('pialert_api_key', '')
 PIALERT_POLL_S     = 60    # seconds between Pi.Alert polls
-SCREENSAVER_IDLE_S = 300   # 5 minutes idle → activate matrix rain
 _alert_raw  = _c.get('alert_node', '!changeme')
 ALERT_NODES = _alert_raw if isinstance(_alert_raw, list) else [_alert_raw]
 SERIAL_PORT        = _c.get('serial_port', None)   # None = auto-detect
@@ -86,6 +85,9 @@ PIHOLE_BASE_URL       = _c.get('pihole_base_url', '')   # e.g. 'http://192.168.0
 PIHOLE_PASSWORD       = _c.get('pihole_password', '')   # Pi-hole admin password
 DNS_SPIKE_THRESHOLD   = _c.get('dns_spike_threshold', 300)  # queries/poll above baseline = alert
 ENABLE_BOT            = _c.get('enable_bot', True)   # False = Pi.Alert/Pi-hole monitor only, no Groq/Meshtastic
+NWS_LATITUDE          = str(_c.get('nws_latitude', '')).strip()
+NWS_LONGITUDE         = str(_c.get('nws_longitude', '')).strip()
+NWS_REFRESH_S         = 900
 
 # Telemetry monitor — watches a specific node for environment data
 TELEMETRY_NODE               = _c.get('telemetry_monitor_node', '').strip()
@@ -107,11 +109,14 @@ _lcd      = None
 _lcd_lock = threading.Lock()
 
 # Button pins (active LOW, internal pull-up)
-KEY1_PIN      = 21   # cycle Pi.Alert view (Mode 3)
-KEY2_PIN      = 20   # wake screensaver (Mode 3)
+KEY1_PIN      = 21   # cycle Mode 3 view
+KEY2_PIN      = 20   # jump to dashboard
 KEY3_PIN      = 16   # backlight toggle (all modes)
 JOY_PRESS_PIN = 13   # hold 3s = reboot prompt
 JOY_UP_PIN    = 6    # confirm reboot (YES)
+JOY_DOWN_PIN  = 19
+JOY_LEFT_PIN  = 5
+JOY_RIGHT_PIN = 26
 
 try:
     import RPi.GPIO as GPIO
@@ -126,6 +131,9 @@ try:
     GPIO.setup(KEY3_PIN,      GPIO.IN, pull_up_down=GPIO.PUD_UP)
     GPIO.setup(JOY_PRESS_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
     GPIO.setup(JOY_UP_PIN,    GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    GPIO.setup(JOY_DOWN_PIN,  GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    GPIO.setup(JOY_LEFT_PIN,  GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    GPIO.setup(JOY_RIGHT_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
     _lcd_ok = True
     print("[HAT] Waveshare 1.44\" LCD initialised")
 except Exception as _e:
@@ -271,21 +279,42 @@ F7   = _font(7)
 # ── Global display state ─────────────────────────────────────────────────────
 _BL_ON = True
 
-SCREENSAVER_MODE    = os.path.exists('/tmp/meshbot_screensaver')
-_screensaver_pause  = threading.Event()  # set = force-show reply/anomaly screen
-_screensaver_active = False              # True = matrix rain is running
-_last_activity      = time.monotonic()  # last user/mesh/alert interaction
+SCREENSAVER_MODE   = os.path.exists('/tmp/meshbot_screensaver')
+MODE3_ACTIVE       = SCREENSAVER_MODE or not ENABLE_BOT
+_screensaver_pause = threading.Event()  # set = force-show reply/anomaly screen
+_last_activity     = time.monotonic()
 
 # Pi.Alert shared state
-_pialert_data   = {}        # latest data keyed by endpoint name
-_pialert_lock   = threading.Lock()
-_current_view   = 0         # which Pi.Alert view is shown (0-5)
-NUM_PA_VIEWS    = 6         # dashboard, online, new, arp, wifi, pihole
-_seen_anomalies = set()     # dedup set — keys of anomalies already alerted
+_pialert_data     = {}
+_pialert_lock     = threading.Lock()
+PA_VIEW_DASHBOARD = 0
+PA_VIEW_ONLINE    = 1
+PA_VIEW_NEW       = 2
+PA_VIEW_ARP       = 3
+PA_VIEW_WIFI      = 4
+PA_VIEW_PIHOLE    = 5
+PA_VIEW_MATRIX    = 6
+PA_VIEW_NWS       = 7
+PA_VIEW_MESSAGES  = 8
+_current_view     = PA_VIEW_DASHBOARD
+NUM_PA_VIEWS      = 9
+_matrix_active    = False
+_seen_anomalies   = set()
 
 # Pi-hole shared state
 _pihole_data    = {}        # latest Pi-hole data keyed by endpoint
 _pihole_lock    = threading.Lock()
+
+# NWS shared state
+_nws_data      = {}
+_nws_lock      = threading.Lock()
+
+# Mesh TX/RX history
+_MSG_HISTORY_MAX   = 30
+_msg_history       = collections.deque(maxlen=_MSG_HISTORY_MAX)
+_msg_history_lock  = threading.Lock()
+_msg_selected_idx  = 0
+_msg_scroll_offset = 0
 
 # DNS spike detection — tracks per-client cumulative query counts between polls
 _DNS_COUNTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.dns_counts.json')
@@ -395,10 +424,100 @@ _load_dns_counts()
 
 
 def _mark_activity():
-    """Reset idle timer and wake display from screensaver."""
-    global _last_activity, _screensaver_active
-    _last_activity      = time.monotonic()
-    _screensaver_active = False
+    """Track recent interaction so transient overlays count as activity."""
+    global _last_activity
+    _last_activity = time.monotonic()
+
+
+def _set_current_view(view_index):
+    global _current_view, _matrix_active, _msg_scroll_offset
+    _current_view = view_index % NUM_PA_VIEWS
+    _matrix_active = (_current_view == PA_VIEW_MATRIX)
+    if _current_view != PA_VIEW_MESSAGES:
+        _msg_scroll_offset = 0
+
+
+def _show_current_view():
+    if not _lcd_ok or not MODE3_ACTIVE:
+        return
+    if _current_view == PA_VIEW_MATRIX:
+        return
+    _draw_pialert_view()
+
+
+def _node_label(interface, node_id):
+    if node_id is None:
+        return "unknown"
+    if node_id == 0xFFFFFFFF:
+        return "open mesh"
+    if not isinstance(node_id, int):
+        return str(node_id)
+    try:
+        node_info = (interface.nodes or {}).get(node_id, {}) if interface else {}
+        user = getattr(node_info, 'user', None)
+        short_name = getattr(user, 'short_name', '') if user else ''
+        long_name = getattr(user, 'long_name', '') if user else ''
+        if short_name:
+            return short_name[:16]
+        if long_name:
+            return long_name[:16]
+    except Exception:
+        pass
+    return f"!{node_id:08x}"[-8:]
+
+
+def _log_mesh_message(direction, msg_kind, peer, text):
+    global _msg_selected_idx, _msg_scroll_offset
+    if not text:
+        return
+    entry = {
+        "ts": time.strftime("%H:%M:%S"),
+        "direction": direction,
+        "kind": msg_kind,
+        "peer": (peer or "unknown")[:20],
+        "text": text[:600],
+    }
+    with _msg_history_lock:
+        _msg_history.appendleft(entry)
+        if _msg_selected_idx == 0:
+            _msg_scroll_offset = 0
+        else:
+            _msg_selected_idx = min(_msg_selected_idx + 1, max(0, len(_msg_history) - 1))
+
+
+def _message_snapshot():
+    global _msg_selected_idx
+    with _msg_history_lock:
+        items = list(_msg_history)
+    if not items:
+        _msg_selected_idx = 0
+        return [], None
+    _msg_selected_idx = max(0, min(_msg_selected_idx, len(items) - 1))
+    return items, items[_msg_selected_idx]
+
+
+def _change_message(delta):
+    global _msg_selected_idx, _msg_scroll_offset
+    with _msg_history_lock:
+        if not _msg_history:
+            return False
+        _msg_selected_idx = max(0, min(_msg_selected_idx + delta, len(_msg_history) - 1))
+    _msg_scroll_offset = 0
+    return True
+
+
+def _scroll_message(delta):
+    global _msg_scroll_offset
+    items, entry = _message_snapshot()
+    if not entry:
+        return False
+    body_lines = textwrap.wrap(entry["text"], width=20) or [""]
+    max_offset = max(0, len(body_lines) - 5)
+    new_offset = max(0, min(_msg_scroll_offset + delta, max_offset))
+    if new_offset == _msg_scroll_offset:
+        return False
+    _msg_scroll_offset = new_offset
+    return True
 
 
 # ── Backlight ────────────────────────────────────────────────────────────────
@@ -559,10 +678,11 @@ def _pa_header(draw, title, color=(0, 70, 140)):
     """Draw a 14px header bar with title and view-indicator dots."""
     draw.rectangle([(0, 0), (128, 14)], fill=color)
     draw.text((4, 3), title, font=F8, fill=(255, 255, 255))
+    start_x = 128 - (NUM_PA_VIEWS * 4) - 4
     for i in range(NUM_PA_VIEWS):
-        x   = 100 + i * 6
+        x   = start_x + i * 4
         col = (255, 255, 0) if i == _current_view else (60, 60, 60)
-        draw.ellipse([(x, 5), (x + 3, 8)], fill=col)
+        draw.ellipse([(x, 5), (x + 2, 7)], fill=col)
 
 
 def _draw_pa_dashboard(draw, data):
@@ -789,6 +909,98 @@ def _draw_pa_pihole(draw, data):
         draw.text((100, y), str(top_cnt), font=F7, fill=(80, 150, 200))
 
 
+def _draw_pa_matrix(draw, data):
+    _pa_header(draw, "MATRIX", (0, 90, 40))
+    draw.text((8, 30), "Matrix rain is", font=F9, fill=(170, 220, 170))
+    draw.text((8, 44), "now a normal", font=F9, fill=(120, 255, 120))
+    draw.text((8, 58), "KEY1 view.", font=F9, fill=(120, 255, 120))
+    draw.line([(0, 78), (128, 78)], fill=(40, 40, 40))
+    draw.text((8, 88), "KEY1 next view", font=F8, fill=(100, 100, 100))
+    draw.text((8, 100), "KEY2 dashboard", font=F8, fill=(100, 100, 100))
+    draw.text((8, 112), "KEY3 backlight", font=F8, fill=(100, 100, 100))
+
+
+def _draw_pa_nws(draw, data):
+    with _nws_lock:
+        nws = dict(_nws_data)
+    _pa_header(draw, "NWS FORECAST", (0, 80, 120))
+    y = 17
+    if not NWS_LATITUDE or not NWS_LONGITUDE:
+        draw.text((4, y + 10), "Set nws_latitude", font=F8, fill=(140, 140, 140))
+        draw.text((4, y + 22), "and nws_longitude", font=F8, fill=(140, 140, 140))
+        draw.text((4, y + 34), "in Settings", font=F8, fill=(100, 100, 100))
+        return
+    if not nws:
+        draw.text((4, y + 20), "Loading forecast...", font=F8, fill=(140, 140, 140))
+        return
+    if nws.get("error"):
+        draw.text((4, y), "Forecast error", font=F8, fill=(220, 120, 120)); y += 12
+        for line in textwrap.wrap(nws["error"], width=22)[:6]:
+            draw.text((4, y), line, font=F7, fill=(140, 140, 140))
+            y += 9
+        return
+
+    location = nws.get("location", "")[:20]
+    periods = nws.get("periods", [])
+    if location:
+        draw.text((2, y), location, font=F8, fill=(160, 220, 255))
+        y += 10
+        draw.line([(0, y), (128, y)], fill=(40, 40, 40)); y += 3
+
+    for period in periods[:2]:
+        name = (period.get("name") or "")[:10]
+        temp = period.get("temperature", "?")
+        unit = period.get("temperatureUnit", "")
+        short = period.get("shortForecast", "")
+        wind = period.get("windSpeed", "")
+        draw.text((2, y), f"{name}", font=F8, fill=(255, 220, 120))
+        draw.text((76, y), f"{temp}{unit}", font=F8, fill=(100, 220, 255))
+        y += 10
+        if wind:
+            draw.text((4, y), wind[:20], font=F7, fill=(100, 100, 100))
+            y += 8
+        for line in textwrap.wrap(short, width=21)[:2]:
+            draw.text((4, y), line, font=F7, fill=(200, 200, 200))
+            y += 8
+        y += 2
+        if y > 110:
+            break
+
+
+def _draw_pa_messages(draw, data):
+    items, entry = _message_snapshot()
+    _pa_header(draw, "MESSAGE LOG", (80, 40, 100))
+    y = 17
+    if not entry:
+        draw.text((4, y + 16), "No mesh traffic yet", font=F9, fill=(150, 150, 150))
+        draw.text((4, y + 32), "DM and open-mesh", font=F8, fill=(100, 100, 100))
+        draw.text((4, y + 43), "traffic will appear", font=F8, fill=(100, 100, 100))
+        draw.text((4, y + 54), "here automatically.", font=F8, fill=(100, 100, 100))
+        return
+
+    total = len(items)
+    pos = _msg_selected_idx + 1
+    dir_label = "TX" if entry["direction"] == "tx" else "RX"
+    kind_label = "OPEN" if entry["kind"] == "bcast" else "DM"
+    draw.text((2, y), f"{dir_label} {kind_label}", font=F8, fill=(255, 220, 120))
+    draw.text((84, y), f"{pos}/{total}", font=F8, fill=(120, 120, 120))
+    y += 10
+    draw.text((2, y), entry["peer"][:18], font=F8, fill=(150, 220, 255))
+    draw.text((96, y), entry["ts"], font=F7, fill=(90, 90, 90))
+    y += 10
+    draw.line([(0, y), (128, y)], fill=(40, 40, 40)); y += 4
+
+    body_lines = textwrap.wrap(entry["text"], width=20) or [""]
+    visible = body_lines[_msg_scroll_offset:_msg_scroll_offset + 5]
+    for line in visible:
+        draw.text((2, y), line, font=F8, fill=(220, 220, 220))
+        y += 11
+    max_offset = max(0, len(body_lines) - 5)
+    if max_offset:
+        draw.text((2, 115), f"U/D:{_msg_scroll_offset}/{max_offset}", font=F7, fill=(80, 80, 80))
+    draw.text((56, 115), "L/R msg", font=F7, fill=(80, 80, 80))
+
+
 _PA_VIEW_DRAW = [
     _draw_pa_dashboard,
     _draw_pa_online,
@@ -796,6 +1008,9 @@ _PA_VIEW_DRAW = [
     _draw_pa_arp,
     _draw_pa_wifi,
     _draw_pa_pihole,
+    _draw_pa_matrix,
+    _draw_pa_nws,
+    _draw_pa_messages,
 ]
 
 
@@ -822,7 +1037,6 @@ REPLY_DISPLAY_S = 30
 def _draw_reply(sender, reply_text):
     if not _lcd_ok:
         return
-    import textwrap
     img  = Image.new('RGB', (128, 128), (0, 0, 0))
     draw = ImageDraw.Draw(img)
     draw.rectangle([(0, 0), (128, 16)], fill=(120, 0, 60))
@@ -841,13 +1055,14 @@ def _show_reply_bg(bot, sender, reply_text):
     """Show AI reply for REPLY_DISPLAY_S seconds, then restore display."""
     def _worker():
         _mark_activity()
-        if SCREENSAVER_MODE:
+        if MODE3_ACTIVE:
             _screensaver_pause.set()
         _draw_reply(sender, reply_text)
         time.sleep(REPLY_DISPLAY_S)
-        if SCREENSAVER_MODE:
+        if MODE3_ACTIVE:
             _screensaver_pause.clear()
             _mark_activity()  # don't immediately re-enter screensaver after reply
+            _show_current_view()
         else:
             bot.update_display(status='ok')
     threading.Thread(target=_worker, daemon=True).start()
@@ -890,6 +1105,9 @@ def _pialert_fetch(endpoint):
 def _pialert_poller_thread(bot):
     """Polls Pi.Alert and Pi-hole every PIALERT_POLL_S seconds; detects anomalies."""
     print("[PiAlert] Poller started")
+    # Force the first NWS fetch immediately even on a freshly booted Pi where
+    # monotonic() may still be below NWS_REFRESH_S.
+    last_nws_fetch = time.monotonic() - NWS_REFRESH_S
     while True:
         try:
             new_data = {}
@@ -926,9 +1144,45 @@ def _pialert_poller_thread(bot):
                     print(f"[PiHole] Refreshed — {pct:.1f}% blocked")
                     _check_dns_spike(bot, ph_new, new_data.get('all-online', []))
 
+            now_m = time.monotonic()
+            if NWS_LATITUDE and NWS_LONGITUDE and (now_m - last_nws_fetch >= NWS_REFRESH_S):
+                latest_nws = _nws_fetch()
+                with _nws_lock:
+                    _nws_data.clear()
+                    _nws_data.update(latest_nws)
+                last_nws_fetch = now_m
+
         except Exception as e:
             print(f"[PiAlert] Poller error: {e}")
         time.sleep(PIALERT_POLL_S)
+
+
+def _nws_fetch():
+    headers = {
+        "User-Agent": "RaspyMeshBot2.0 (github.com/Coreymillia/RaspyMeshBot2.0)",
+        "Accept": "application/geo+json",
+    }
+    try:
+        points_url = f"https://api.weather.gov/points/{NWS_LATITUDE},{NWS_LONGITUDE}"
+        points_r = requests.get(points_url, headers=headers, timeout=10)
+        points_r.raise_for_status()
+        props = points_r.json().get("properties", {})
+        forecast_url = props.get("forecast")
+        rel_props = props.get("relativeLocation", {}).get("properties", {})
+        if not forecast_url:
+            raise RuntimeError("NWS forecast URL missing from points response")
+
+        forecast_r = requests.get(forecast_url, headers=headers, timeout=10)
+        forecast_r.raise_for_status()
+        periods = forecast_r.json().get("properties", {}).get("periods", [])
+        city = rel_props.get("city", "")
+        state = rel_props.get("state", "")
+        location = ", ".join(part for part in (city, state) if part)
+        print(f"[NWS] Forecast refreshed for {NWS_LATITUDE},{NWS_LONGITUDE}")
+        return {"location": location, "periods": periods[:4], "updated": time.time()}
+    except Exception as e:
+        print(f"[NWS] forecast error: {e}")
+        return {"error": str(e), "updated": time.time()}
 
 
 def _check_anomalies(bot, data):
@@ -1068,18 +1322,18 @@ def _check_dns_spike(bot, ph_data, pa_online):
 
 def _fire_anomaly(bot, title, lines, target_view):
     """Wake display to anomaly view, show alert screen, send mesh DM."""
-    global _current_view
     print(f"[PiAlert] ANOMALY: {title} — {lines}")
-    _current_view = target_view
+    _set_current_view(target_view)
     _mark_activity()
     rgb_set_mode("anomaly", hold_s=30)
 
     def _show():
-        if SCREENSAVER_MODE:
+        if MODE3_ACTIVE:
             _screensaver_pause.set()
         _draw_anomaly_alert(title, lines, hold_s=20)
-        if SCREENSAVER_MODE:
+        if MODE3_ACTIVE:
             _screensaver_pause.clear()
+            _show_current_view()
         _mark_activity()
 
     threading.Thread(target=_show, daemon=True).start()
@@ -1098,7 +1352,7 @@ def _fire_anomaly(bot, title, lines, target_view):
 
 # ==== MATRIX RAIN SCREENSAVER ====
 def _matrix_rain_thread():
-    """Matrix rain — only draws frames when _screensaver_active is True."""
+    """Matrix rain — only draws frames when the matrix view is selected."""
     if not _lcd_ok:
         return
 
@@ -1123,8 +1377,7 @@ def _matrix_rain_thread():
     } for _ in range(COLS)]
 
     while True:
-        # Only render when screensaver is active and nothing else is displayed
-        if not _screensaver_active or _screensaver_pause.is_set():
+        if not _matrix_active or _screensaver_pause.is_set():
             time.sleep(0.1)
             continue
 
@@ -1376,7 +1629,7 @@ class GroqMeshBot:
         if hasattr(self.interface, "myInfo") and self.interface.myInfo:
             self.my_node_id = self.interface.myInfo.my_node_num
             print(f"Connected as node {self._node_short()}")
-            if not SCREENSAVER_MODE:
+            if not MODE3_ACTIVE:
                 self.update_display()
         else:
             print("Warning: Could not read node ID")
@@ -1391,7 +1644,9 @@ class GroqMeshBot:
 
             if not text or from_node == self.my_node_id:
                 return
+            sender_label = _node_label(self.interface, from_node)
             if to_node == 0xFFFFFFFF:
+                _log_mesh_message("rx", "bcast", sender_label, text)
                 self._handle_broadcast(text, from_node)
                 return
             if to_node != self.my_node_id:
@@ -1402,6 +1657,7 @@ class GroqMeshBot:
             self.message_count    += 1
             self.last_message_time = datetime.now()
             self.last_preview      = text[:20]
+            _log_mesh_message("rx", "dm", sender_label, text)
 
             try:
                 node_info = self.interface.nodes.get(from_node, {})
@@ -1414,7 +1670,7 @@ class GroqMeshBot:
 
             self.ai_status = "busy"
             rgb_set_mode("ai_busy")
-            if not SCREENSAVER_MODE:
+            if not MODE3_ACTIVE:
                 self.update_display(status='ai_busy')
 
             ai_reply = query_groq(text)
@@ -1423,13 +1679,14 @@ class GroqMeshBot:
             self.ai_status = "ready"
             rgb_set_mode("message", hold_s=5)
             send_long_message(self.interface, ai_reply, from_node)
+            _log_mesh_message("tx", "dm", self.last_sender, ai_reply)
             print(f"Sent DM to {from_node}")
             _push_cyd_msg("dm", self.last_sender, ai_reply)
             _show_reply_bg(self, self.last_sender, ai_reply)
 
         except Exception as e:
             print(f"on_receive error: {e}")
-            if not SCREENSAVER_MODE:
+            if not MODE3_ACTIVE:
                 _draw_display(status='error', last_preview=str(e)[:20])
 
     def on_receive_telemetry(self, packet, **kwargs):
@@ -1544,6 +1801,7 @@ class GroqMeshBot:
         print(f"Broadcast reply ({self.broadcast_count}/{BROADCAST_DAILY_MAX} today): {reply}")
         try:
             self.interface.sendText(reply)
+            _log_mesh_message("tx", "bcast", _node_label(self.interface, from_node), reply)
         except Exception as e:
             print(f"Broadcast send error: {e}")
 
@@ -1552,18 +1810,22 @@ class GroqMeshBot:
         print("Groq AI MeshBot ready!" if ENABLE_BOT else "Pi.Alert Monitor ready (bot disabled)!")
         rgb_set_mode("boot", hold_s=12)   # amber breathe during startup, then settle to normal
 
-        if SCREENSAVER_MODE or not ENABLE_BOT:
-            print("[SAVER] Mode 3: Pi.Alert monitor + idle matrix rain screensaver")
+        if MODE3_ACTIVE:
+            print("[MODE3] Pi.Alert multi-view UI active")
             threading.Thread(target=_matrix_rain_thread,      daemon=True).start()
             threading.Thread(target=_pialert_poller_thread,   args=(self,), daemon=True).start()
+            _set_current_view(PA_VIEW_DASHBOARD)
             _draw_pialert_view()
         else:
             self.update_display(status='ok')
 
-        global _screensaver_active, _current_view
         key1_was_low = False
         key2_was_low = False
         key3_was_low = False
+        jl_was_low = False
+        jr_was_low = False
+        ju_was_low = False
+        jd_was_low = False
         _joy_hold    = 0      # joystick-press hold counter for reboot
         _last_display_refresh = 0.0
 
@@ -1571,17 +1833,10 @@ class GroqMeshBot:
             time.sleep(0.2)
             now_m = time.monotonic()
 
-            if SCREENSAVER_MODE or not ENABLE_BOT:
-                # Activate screensaver after idle threshold
-                idle = now_m - _last_activity
-                if not _screensaver_active and idle >= SCREENSAVER_IDLE_S:
-                    _screensaver_active = True
-                    print(f"[SAVER] Screensaver on after {idle:.0f}s idle")
-
-                # Refresh Pi.Alert display every 5 s when awake
-                if (not _screensaver_active and not _screensaver_pause.is_set()
+            if MODE3_ACTIVE:
+                if (_current_view != PA_VIEW_MATRIX and not _screensaver_pause.is_set()
                         and now_m - _last_display_refresh >= 5.0):
-                    _draw_pialert_view()
+                    _show_current_view()
                     _last_display_refresh = now_m
             else:
                 if now_m - _last_display_refresh >= 5.0:
@@ -1594,14 +1849,18 @@ class GroqMeshBot:
                     k1 = GPIO.input(KEY1_PIN) == GPIO.LOW
                     k2 = GPIO.input(KEY2_PIN) == GPIO.LOW
                     k3 = GPIO.input(KEY3_PIN) == GPIO.LOW
+                    jl = GPIO.input(JOY_LEFT_PIN) == GPIO.LOW
+                    jr = GPIO.input(JOY_RIGHT_PIN) == GPIO.LOW
+                    ju = GPIO.input(JOY_UP_PIN) == GPIO.LOW
+                    jd = GPIO.input(JOY_DOWN_PIN) == GPIO.LOW
 
-                    if k1 and not key1_was_low and SCREENSAVER_MODE:
-                        _current_view = (_current_view + 1) % NUM_PA_VIEWS
+                    if k1 and not key1_was_low and MODE3_ACTIVE:
+                        _set_current_view(_current_view + 1)
                         _mark_activity()
-                        _draw_pialert_view()
+                        _show_current_view()
                         print(f"[BTN] KEY1: view -> {_current_view}")
 
-                    if k1 and not key1_was_low and not SCREENSAVER_MODE:
+                    if k1 and not key1_was_low and not MODE3_ACTIVE:
                         # Cycle broadcast daily limit: 0 → 1 → 2 → 3 → 0
                         global BROADCAST_DAILY_MAX
                         BROADCAST_DAILY_MAX = (BROADCAST_DAILY_MAX + 1) % 4
@@ -1609,16 +1868,35 @@ class GroqMeshBot:
                         print(f"[BTN] KEY1: broadcast limit -> {BROADCAST_DAILY_MAX}/day")
                         self.update_display(status='ok')
 
-                    if k2 and not key2_was_low and SCREENSAVER_MODE:
+                    if k2 and not key2_was_low and MODE3_ACTIVE:
+                        _set_current_view(PA_VIEW_DASHBOARD)
                         _mark_activity()
-                        _draw_pialert_view()
-                        print("[BTN] KEY2: wake")
+                        _show_current_view()
+                        print("[BTN] KEY2: dashboard")
 
                     if k3 and not key3_was_low:
                         _toggle_backlight()
-                        if SCREENSAVER_MODE:
+                        if MODE3_ACTIVE:
                             _mark_activity()
                         print("[BTN] KEY3: backlight toggled")
+
+                    if MODE3_ACTIVE and _current_view == PA_VIEW_MESSAGES:
+                        if jl and not jl_was_low and _change_message(1):
+                            _mark_activity()
+                            _draw_pialert_view()
+                            print(f"[BTN] JOY_LEFT: older message -> {_msg_selected_idx}")
+                        if jr and not jr_was_low and _change_message(-1):
+                            _mark_activity()
+                            _draw_pialert_view()
+                            print(f"[BTN] JOY_RIGHT: newer message -> {_msg_selected_idx}")
+                        if ju and not ju_was_low and _scroll_message(-1):
+                            _mark_activity()
+                            _draw_pialert_view()
+                            print(f"[BTN] JOY_UP: scroll -> {_msg_scroll_offset}")
+                        if jd and not jd_was_low and _scroll_message(1):
+                            _mark_activity()
+                            _draw_pialert_view()
+                            print(f"[BTN] JOY_DOWN: scroll -> {_msg_scroll_offset}")
 
                     # Joystick hold → reboot prompt
                     joy = GPIO.input(JOY_PRESS_PIN) == GPIO.LOW
@@ -1628,6 +1906,10 @@ class GroqMeshBot:
                     key1_was_low = k1
                     key2_was_low = k2
                     key3_was_low = k3
+                    jl_was_low = jl
+                    jr_was_low = jr
+                    ju_was_low = ju
+                    jd_was_low = jd
                 except Exception:
                     pass
 

@@ -8,7 +8,7 @@
 - 📬 **Mesh-based alerting** — sends anomaly alerts via Meshtastic DM
 - 🌡️ **Telemetry monitor** — watches a Meshtastic sensor node (BME680 or similar) and DMs you when temperature or humidity thresholds are crossed
 - 📺 **CYD companion display** — ESP32 "Cheap Yellow Display" shows bot DM replies full-screen with a PuTTY-style multi-color terminal palette; touch to navigate messages; auto-jumps to newest on arrival
-- 🖥 **Live LCD dashboard** with device status, temp/humidity, alerts, and matrix rain screensaver
+- 🖥 **Live LCD dashboard** with Pi.Alert views, matrix rain, NWS forecast, and TX/RX message history
 - 🔐 **Optional RaspyJack security toolkit mode**
 - ⚙ **Built-in web settings portal** — configure everything from a browser
 - 🔁 **ARP baseline reset** — long-press the CYD display to re-anchor the ARP monitor after network changes
@@ -34,7 +34,7 @@ Boot the Pi, pick your mode on the screen with a button press. Press the **joyst
 | Mode Selector + T190 | MeshBot + T190 | Matrix Rain + T190 |
 |:---:|:---:|:---:|
 | ![Mode selector on hardware](images/IMG_20260305_235716.jpg) | ![MeshBot status on hardware](images/IMG_20260306_000305.jpg) | ![Matrix rain on hardware](images/IMG_20260305_235553.jpg) |
-| *Boot selector — also showing T190 with last received message* | *MeshBot status: 99 peers, 2 DMs, AI ready* | *Matrix rain screensaver interrupted by incoming message* |
+| *Boot selector — also showing T190 with last received message* | *MeshBot status: 99 peers, 2 DMs, AI ready* | *Matrix rain as a selectable KEY3 view* |
 
 ### In the Printed Case
 
@@ -56,7 +56,7 @@ Note: RaspyJack requires an Ethernet hat and WiFi dongle for full features. Inst
 |-----|------|-------------|
 | KEY1 | **MeshBot** | AI chatbot with live status screen on the LCD |
 | KEY2 | **RaspyJack** | Security toolkit (separate install — see below) |
-| KEY3 | **Pi.Alert Monitor** | Live network security dashboard + Pi-hole stats + idle matrix rain screensaver |
+| KEY3 | **Pi.Alert Multi-View** | Live network security dashboard + Pi-hole + Matrix + NWS forecast + message log |
 | Joystick ↑ | **Bettercap** | Passive network recon — maps every device on your LAN + web dashboard at `:8082` |
 | Joystick Press | **⚙ Settings Portal** | Opens a web config page at `http://[pi-ip]:8080` — edit all settings from any browser |
 
@@ -93,11 +93,11 @@ See [Mode 3: Pi.Alert Monitor](#mode-3-pialert-monitor) below.
 
 ## Mode 3: Pi.Alert Monitor
 
-KEY3 launches a combined AI chatbot + live network security dashboard. The MeshBot runs in the background exactly as normal while the LCD shows data pulled from your [Pi.Alert](https://github.com/jokob-sk/Pi.Alert) instance.
+KEY3 launches the main combined AI chatbot + network dashboard UI. The MeshBot runs in the background exactly as normal while the LCD cycles between Pi.Alert data, a selectable Matrix view, NWS forecast, and a TX/RX message log.
 
 ### What's on the display
 
-Five views cycle with **KEY1**. A row of dots in the top-right corner shows which view is active.
+Nine views cycle with **KEY1**. A row of dots in the top-right corner shows which view is active.
 
 | View | Content |
 |------|---------|
@@ -107,18 +107,23 @@ Five views cycle with **KEY1**. A row of dots in the top-right corner shows whic
 | 3 — ARP Alerts | MAC-change events (red header when alerts exist) |
 | 4 — Shady WiFi | Suspicious access points with security score |
 | 5 — Pi-hole | DNS block rate %, total/blocked query counts, top blocked domain, top DNS client |
+| 6 — Matrix | Selectable matrix rain animation |
+| 7 — NWS Forecast | Current National Weather Service forecast for your configured lat/lon |
+| 8 — Messages | Last 30 TX/RX DM + open-mesh messages with joystick browsing |
 
 ### Buttons in Mode 3
 
 | Button | Pin | Action |
 |--------|-----|--------|
-| KEY1 | BCM 21 | Cycle to next Pi.Alert view |
-| KEY2 | BCM 20 | Wake display from screensaver |
+| KEY1 | BCM 21 | Cycle to next KEY3 view |
+| KEY2 | BCM 20 | Jump back to the Pi.Alert dashboard |
 | KEY3 | BCM 16 | Toggle backlight |
+| Joystick Left/Right | BCM 5 / 26 | In Messages view: older/newer message |
+| Joystick Up/Down | BCM 6 / 19 | In Messages view: scroll selected message text |
 
-### Screensaver
+### Matrix view
 
-After **5 minutes of inactivity** (no button presses, no incoming mesh messages, no new anomalies) the matrix rain screensaver activates automatically. Press **KEY2** to wake back to the Pi.Alert dashboard.
+The matrix rain screen is no longer an automatic idle screensaver. It is now a normal **KEY1-selectable view** inside KEY3 mode.
 
 ### Anomaly alerter
 
@@ -152,6 +157,7 @@ This works via a SIGUSR1 signal to `arpwatch_daemon.py`. No SSH required.
 
 - A running Pi.Alert instance accessible on your local network
 - Your Pi.Alert IP, API key, and the mesh node ID you want to receive alerts — all set in `config.json` (see Setup step 4)
+- Optional: set `nws_latitude` and `nws_longitude` in `config.json` or the Settings Portal to enable the NWS forecast view
 - The `pialert-patch/` directory in this repo contains the daemon scripts that extend Pi.Alert with ARP watching, WiFi scanning, and BLE scanning on the Pi.Alert host
 
 ---
@@ -549,7 +555,7 @@ sudo reboot
 # MeshBot with status screen (Mode 1)
 python3 mesh_groq_ai_bot_oled.py
 
-# MeshBot with Pi.Alert monitor + matrix rain (Mode 3)
+# MeshBot with Pi.Alert multi-view UI (Mode 3)
 touch /tmp/meshbot_screensaver
 python3 mesh_groq_ai_bot_oled.py
 
@@ -563,7 +569,7 @@ sudo python3 mode_selector.py
 
 | File | Purpose |
 |------|---------|
-| `mesh_groq_ai_bot_oled.py` | Main bot — Meshtastic listener, Groq AI, Pi.Alert monitor, telemetry monitor, anomaly alerter, matrix rain |
+| `mesh_groq_ai_bot_oled.py` | Main bot — Meshtastic listener, Groq AI, Pi.Alert multi-view UI, telemetry monitor, anomaly alerter, and message history |
 | `mode_selector.py` | Boot menu + web settings portal at `:8080` |
 | `LCD_1in44.py` | Waveshare 1.44" LCD SPI driver |
 | `LCD_Config.py` | GPIO/SPI hardware configuration for the LCD |
@@ -637,7 +643,7 @@ To reconfigure later, hold the **BOOT** button while powering on.
 - The broadcast daily limit (0–3) is shown live on the LCD as `BC:N/d` and can be cycled on the fly without restarting the service
 - Groq AI replies are capped at 100 tokens to keep mesh messages short
 - `PYTHONUNBUFFERED=1` is set in the systemd service so log output appears immediately in `meshbot.log`
-- The Pi.Alert poll interval (`PIALERT_POLL_S`) and screensaver idle timeout (`SCREENSAVER_IDLE_S`) are constants at the top of `mesh_groq_ai_bot_oled.py` and can be tuned freely
+- The Pi.Alert poll interval (`PIALERT_POLL_S`) and NWS refresh interval (`NWS_REFRESH_S`) are constants at the top of `mesh_groq_ai_bot_oled.py` and can be tuned freely
 
 ---
 

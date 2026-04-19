@@ -151,6 +151,14 @@ button{{margin-top:24px;width:100%;padding:12px;background:#0a6;color:#fff;borde
 <label>API Key</label>
 <input type="password" name="pialert_api_key" value="{v('pialert_api_key')}">
 </div>
+<div class="sec"><h3>NWS Forecast</h3>
+<label>Latitude</label>
+<input type="text" name="nws_latitude" value="{v('nws_latitude')}">
+<div class="hint">Used for the KEY3 NWS forecast view &mdash; example: <i>39.7392</i></div>
+<label>Longitude</label>
+<input type="text" name="nws_longitude" value="{v('nws_longitude')}">
+<div class="hint">Used for the KEY3 NWS forecast view &mdash; example: <i>-104.9903</i></div>
+</div>
 <div class="sec"><h3>Pi-hole</h3>
 <label>Base URL</label>
 <input type="text" name="pihole_base_url" value="{v('pihole_base_url')}">
@@ -272,6 +280,8 @@ def launch_settings_portal(lcd):
             cfg['groq_api_key']      = get('groq_api_key')
             cfg['pialert_base_url']  = get('pialert_base_url')
             cfg['pialert_api_key']   = get('pialert_api_key')
+            cfg['nws_latitude']      = get('nws_latitude').strip()
+            cfg['nws_longitude']     = get('nws_longitude').strip()
             cfg['pihole_base_url']   = get('pihole_base_url')
             cfg['enable_bot']        = (get('enable_bot') == 'true')
             sp = get('serial_port').strip()
