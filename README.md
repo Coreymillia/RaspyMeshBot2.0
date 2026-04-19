@@ -1,7 +1,7 @@
 # RaspyMeshBot 2.0
 ## Key Features
 
-- 🤖 **Groq AI Meshtastic chatbot** — responds to direct messages and optionally public mesh traffic
+- 🤖 **MeshBot for Meshtastic** — Groq-powered DM replies plus a lively open-mesh personality with canned greetings, test acknowledgments, cryptic replies, and scheduled check-ins
 - 📡 **Multi-mode boot selector** on Waveshare LCD HAT
 - 🛜 **Pi.Alert network monitoring** with ARP, new device, and WiFi anomaly detection
 - 🧱 **Pi-hole DNS analytics** with query stats and spike detection
@@ -15,7 +15,7 @@
 - 🔁 **ARP baseline reset** — long-press the CYD display to re-anchor the ARP monitor after network changes
 - 🌐 **IP forward management** — persistent `ip_forward` setting survives reboots; MITM and RaspyJack auto-manage it
 
-A Raspberry Pi Zero 2 W project that combines a **Groq AI-powered Meshtastic chatbot** with a **3-mode boot selector** on a Waveshare 1.44" LCD HAT.
+A Raspberry Pi Zero 2 W project centered around a **Meshtastic meshbot** with Groq-powered DM replies, an active open-mesh personality, and a **3-mode boot selector** on a Waveshare 1.44" LCD HAT.
 
 Boot the Pi, pick your mode on the screen with a button press. Press the **joystick** at any time to open the built-in **web settings portal** — no SSH or manual config file editing needed.
 
@@ -55,7 +55,7 @@ Note: RaspyJack requires an Ethernet hat and WiFi dongle for full features. Inst
 
 | Key | Mode | What it does |
 |-----|------|-------------|
-| KEY1 | **MeshBot** | AI chatbot with live status screen on the LCD |
+| KEY1 | **MeshBot** | DM AI bot + open-mesh canned replies with live status screen |
 | KEY2 | **RaspyJack** | Security toolkit (separate install — see below) |
 | KEY3 | **Pi.Alert Multi-View** | Live network security dashboard + Pi-hole + Matrix + NWS forecast + message log |
 | Joystick ↑ | **Bettercap** | Passive network recon — maps every device on your LAN + web dashboard at `:8082` |
@@ -67,16 +67,16 @@ The boot selector waits indefinitely — nothing launches until you press a butt
 
 ## What MeshBot Does
 
-**Direct messages (DMs):** Anyone on the mesh who sends a private message to this node gets a real AI-generated reply powered by Groq LLaMA 3.1. The reply is sent back as a DM.
+**Direct messages (DMs):** Anyone on the mesh who sends a private message to this node gets a real AI-generated reply powered by **Groq LLaMA 3.1**. The reply is sent back as a DM.
 
-**Open channel:** The bot also listens to public mesh traffic and replies with canned responses. The daily broadcast limit is configurable from **0 to 3 replies per 24 hours** (default 3) — set to 0 to go completely silent on the open channel. It responds to:
+**Open channel:** The bot also listens to public mesh traffic, but this side is **not Groq-powered**. Open-mesh replies are all **local canned responses** so they stay fast, short, and radio-friendly. The daily broadcast limit is configurable from **0 to 3 replies per 24 hours** (default 3) — set to 0 to go completely silent on the open channel. It responds to:
 - `test`, `testing`, `check`, `radio check`, `qso`, `copy` → acknowledges the test from Victor, Colorado
 - `hello`, `hi`, `hey`, `howdy`, `hola`, `good morning`, `good evening`, etc. → sends a friendly greeting back so the channel does not feel empty
 - `who`, `what`, `bot`, `anyone`, `robot`, `human`, `alive`, etc. → explains what the node is
 - `flight`, `airline`, `flying`, `altitude`, `wifi`, etc. → airborne-specific reply
 - Profanity → dramatic self-destruct humour reply
 - Everything else → short generic acknowledgments from Victor, Colorado
-- **10% chance on any message** → random cryptic symbol/hex reply regardless of keywords
+- **10% chance on any message** → random cryptic symbol/hex reply regardless of keywords (current live setting)
 
 ### Scheduled open-mesh check-ins
 
@@ -90,7 +90,7 @@ If `scheduled_test_enabled` is turned on, the bot also schedules its own random 
 
 You can disable this any time in the **Settings Portal → Meshtastic** section.
 
-There are **74 unique canned replies** across 7 categories so responses are not repetitive.
+There are dozens of canned replies across multiple categories so responses do not feel repetitive, even without much local mesh traffic.
 
 **LCD display (KEY1 mode):**
 - Shows a live status screen: node ID, peer count, DM count, last sender, time since last message, message preview, AI status
@@ -106,11 +106,11 @@ See [Mode 3: Pi.Alert Monitor](#mode-3-pialert-monitor) below.
 
 ## Mode 3: Pi.Alert Monitor
 
-KEY3 launches the main combined AI chatbot + network dashboard UI. The MeshBot runs in the background exactly as normal while the LCD cycles between Pi.Alert data, a selectable Matrix view, NWS forecast, and a TX/RX message log.
+KEY3 launches the main combined AI chatbot + network dashboard UI. The MeshBot runs in the background exactly as normal while the LCD cycles between Pi.Alert data, a selectable Matrix view, NWS forecast, a TX/RX message log, and a manual mesh-test sender.
 
 ### What's on the display
 
-Nine views cycle with **KEY1**. A row of dots in the top-right corner shows which view is active.
+Ten views cycle with **KEY1**. A row of dots in the top-right corner shows which view is active.
 
 | View | Content |
 |------|---------|
@@ -123,15 +123,16 @@ Nine views cycle with **KEY1**. A row of dots in the top-right corner shows whic
 | 6 — Matrix | Selectable matrix rain animation |
 | 7 — NWS Forecast | Current National Weather Service forecast for your configured lat/lon |
 | 8 — Messages | Last 30 TX/RX DM + open-mesh messages with joystick browsing |
+| 9 — Mesh Test TX | Scroll canned test messages and manually send one on the open mesh |
 
 ### Buttons in Mode 3
 
 | Button | Pin | Action |
 |--------|-----|--------|
 | KEY1 | BCM 21 | Cycle to next KEY3 view |
-| KEY2 | BCM 20 | Jump back to the Pi.Alert dashboard |
+| KEY2 | BCM 20 | Jump back to the Pi.Alert dashboard, or send the selected test message in Mesh Test TX view |
 | KEY3 | BCM 16 | Toggle backlight |
-| Joystick Left/Right | BCM 5 / 26 | In Messages view: older/newer message |
+| Joystick Left/Right | BCM 5 / 26 | In Messages view: older/newer message; in Mesh Test TX: previous/next canned test |
 | Joystick Up/Down | BCM 6 / 19 | In Messages view: scroll selected message text |
 
 ### Matrix view
