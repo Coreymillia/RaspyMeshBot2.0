@@ -6,6 +6,7 @@
 - 🛜 **Pi.Alert network monitoring** with ARP, new device, and WiFi anomaly detection
 - 🧱 **Pi-hole DNS analytics** with query stats and spike detection
 - 📬 **Mesh-based alerting** — sends anomaly alerts via Meshtastic DM
+- 📻 **Scheduled open-mesh check-ins** — optional random test broadcasts between 8am and 8pm local time, at least 3 days apart
 - 🌡️ **Telemetry monitor** — watches a Meshtastic sensor node (BME680 or similar) and DMs you when temperature or humidity thresholds are crossed
 - 📺 **CYD companion display** — ESP32 "Cheap Yellow Display" shows bot DM replies full-screen with a PuTTY-style multi-color terminal palette; touch to navigate messages; auto-jumps to newest on arrival
 - 🖥 **Live LCD dashboard** with Pi.Alert views, matrix rain, NWS forecast, and TX/RX message history
@@ -69,13 +70,25 @@ The boot selector waits indefinitely — nothing launches until you press a butt
 **Direct messages (DMs):** Anyone on the mesh who sends a private message to this node gets a real AI-generated reply powered by Groq LLaMA 3.1. The reply is sent back as a DM.
 
 **Open channel:** The bot also listens to public mesh traffic and replies with canned responses. The daily broadcast limit is configurable from **0 to 3 replies per 24 hours** (default 3) — set to 0 to go completely silent on the open channel. It responds to:
-- `test`, `testing`, `check`, `radio check`, `qso`, `copy` → acknowledges the test and invites a DM
-- `hello`, `hi`, `hey`, `howdy`, `hola`, `morning`, `evening`, etc. → greeting + invite to DM
+- `test`, `testing`, `check`, `radio check`, `qso`, `copy` → acknowledges the test from Victor, Colorado
+- `hello`, `hi`, `hey`, `howdy`, `hola`, `good morning`, `good evening`, etc. → sends a friendly greeting back so the channel does not feel empty
 - `who`, `what`, `bot`, `anyone`, `robot`, `human`, `alive`, etc. → explains what the node is
 - `flight`, `airline`, `flying`, `altitude`, `wifi`, etc. → airborne-specific reply
 - Profanity → dramatic self-destruct humour reply
-- Everything else → generic "AI bot here, DM me" style message
+- Everything else → short generic acknowledgments from Victor, Colorado
 - **10% chance on any message** → random cryptic symbol/hex reply regardless of keywords
+
+### Scheduled open-mesh check-ins
+
+If `scheduled_test_enabled` is turned on, the bot also schedules its own random open-mesh test message:
+
+- Uses the Pi's **local timezone** (for Colorado, `America/Denver` is ideal)
+- Picks a random send time between **8:00 AM and 8:00 PM**
+- Enforces at least **3 days** between messages
+- Chooses the next send time randomly within a **3 to 7 day** window
+- If someone replies with words like `ack`, `copy`, `heard`, or `test` within the acknowledgment window, the bot sends a short thank-you back on the open mesh
+
+You can disable this any time in the **Settings Portal → Meshtastic** section.
 
 There are **74 unique canned replies** across 7 categories so responses are not repetitive.
 
@@ -375,6 +388,7 @@ Fill in:
     "alert_node": ["!your_node_id"],
     "pihole_base_url": "http://YOUR_PIHOLE_IP/api",
     "enable_bot": true,
+    "scheduled_test_enabled": false,
     "telemetry_monitor_node": "!sensor_node_id",
     "temp_high_f": 82,
     "temp_low_f": 50,

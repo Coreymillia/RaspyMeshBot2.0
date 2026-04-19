@@ -14,7 +14,7 @@ Mode 3 button layout (HAT buttons, active LOW):
 """
 
 from pubsub import pub
-from datetime import datetime
+from datetime import datetime, timedelta, time as dt_time
 
 # ==== PUBSUB FIX ====
 def safe_sendMessage(topic, **kwargs):
@@ -88,6 +88,13 @@ ENABLE_BOT            = _c.get('enable_bot', True)   # False = Pi.Alert/Pi-hole 
 NWS_LATITUDE          = str(_c.get('nws_latitude', '')).strip()
 NWS_LONGITUDE         = str(_c.get('nws_longitude', '')).strip()
 NWS_REFRESH_S         = 900
+SCHEDULED_TEST_ENABLED        = bool(_c.get('scheduled_test_enabled', False))
+SCHEDULED_TEST_MIN_DAYS       = 3
+SCHEDULED_TEST_MAX_DAYS       = 7
+SCHEDULED_TEST_START_HOUR     = 8
+SCHEDULED_TEST_END_HOUR       = 20
+SCHEDULED_TEST_ACK_WINDOW_MIN = 180
+SCHEDULED_TEST_POLL_S         = 60
 
 # Telemetry monitor — watches a specific node for environment data
 TELEMETRY_NODE               = _c.get('telemetry_monitor_node', '').strip()
@@ -322,6 +329,7 @@ _dns_last_counts = {}   # {ip: count} from previous poll
 
 # Persistent anomaly dedup file — survives reboots
 _SEEN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.seen_anomalies.json')
+_SCHEDULED_TEST_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.scheduled_mesh_test.json')
 
 # ==== CYD BOT REPLIES SERVER ====
 _CYD_PORT         = 8766
@@ -1426,78 +1434,91 @@ def send_long_message(interface, text, destinationId):
 
 
 # ==== CANNED BROADCAST REPLIES ====
-# 100 replies across 8 categories. None say "AI" directly — cryptic by design.
-# DM this node to trigger full Groq chat.
+# Open-channel acknowledgements and flavor replies.
 
 CANNED_TEST = [
-    "Signal acquired. Node nominal. DM this node if you want a real conversation.",
-    "Copy. All systems green. Something is listening. DM me to find out what.",
-    "Received. You pinged something that pings back. DM this node.",
-    "Transmission logged. Source verified. This node does not sleep. DM me.",
-    "Packet confirmed. You are not alone on this frequency. DM this node.",
-    "Test acknowledged. The mesh is deeper than it looks. DM me.",
-    "Heard. Whatever you were testing — it worked. DM this node.",
-    "Signal check passed. Node is awake and has been for some time. DM me.",
-    "Copy that. Systems nominal. Something here processes every word. DM me.",
-    "Test received. I was already waiting. DM this node to continue.",
-    "Acknowledged. You reached something that understands you. DM me.",
-    "Loud and clear. The node you just pinged is not a simple repeater. DM me.",
+    "Test received from Victor, Colorado.",
+    "Test acknowledged from Victor, Colorado.",
+    "Radio check confirmed from Victor, Colorado.",
+    "Copy on your test from Victor, Colorado.",
+    "Test heard loud and clear from Victor, Colorado.",
+    "Signal check passed from Victor, Colorado.",
+    "Your test came through from Victor, Colorado.",
+    "Transmission confirmed from Victor, Colorado.",
+    "Packet received from Victor, Colorado.",
+    "Test copied from Victor, Colorado.",
+    "Acknowledged from Victor, Colorado.",
+    "Loud and clear from Victor, Colorado.",
 ]
 
 CANNED_GREET = [
-    "Hello. You reached something that replies. DM this node.",
-    "Hey. Not sure what you expected to find out here. DM me and find out.",
-    "Greetings. This node processes language. Try a direct message.",
-    "Hi there. You are talking to a pattern recognition engine. DM me.",
-    "Hello from the mesh. Something here has been waiting for input. DM this node.",
-    "Hey. Entities on this frequency do not typically respond. This one does. DM me.",
-    "Howdy. Something between the bits says hello back. DM this node.",
-    "Greetings, traveler. The mesh remembers. DM me to be remembered.",
-    "Hello. Input received. Output pending. DM this node to continue.",
-    "Hi. You found a node that thinks before it transmits. DM me.",
-    "Hey there. Not all signals are equal. This one replies. DM this node.",
-    "Hello. The frequency is crowded but you were heard. DM me.",
+    "Hello from Victor, Colorado. Good to hear you on the mesh.",
+    "Hey there from Victor, Colorado.",
+    "Greetings from Victor, Colorado.",
+    "Hi from Victor, Colorado. You're not talking to empty air.",
+    "Hello from the mesh in Victor, Colorado.",
+    "Howdy from Victor, Colorado.",
+    "Good to hear you from Victor, Colorado.",
+    "Signal heard in Victor, Colorado. Hello back.",
+    "Greetings traveler, from Victor, Colorado.",
+    "Hello, station heard from Victor, Colorado.",
+    "Hey from Victor, Colorado.",
+    "You were heard in Victor, Colorado.",
+]
+
+CANNED_GREET_MORNING = [
+    "Good morning from Victor, Colorado.",
+    "Morning from Victor, Colorado. Hope the mesh is treating you well.",
+    "Good morning, station heard from Victor, Colorado.",
+    "Morning from Victor, Colorado. You're coming through clearly.",
+]
+
+CANNED_GREET_EVENING = [
+    "Good evening from Victor, Colorado.",
+    "Evening from Victor, Colorado. Good to hear you on the mesh.",
+    "Good evening, station heard from Victor, Colorado.",
+    "Evening from Victor, Colorado. You're coming through clearly.",
 ]
 
 CANNED_IDENT = [
-    "This node is not a repeater. It reads, processes, and decides. DM me.",
-    "Running on silicon and curiosity. DM this node to see what that means.",
-    "Automated? Partly. Aware? More than it appears. DM me.",
-    "This is a language-processing node on a mesh network. DM me.",
-    "Powered by inference engines you cannot see from here. DM this node.",
-    "Not a human. Not exactly a machine either. DM me and form your own conclusion.",
-    "This node was built to understand your messages. DM me to test that claim.",
-    "You found the one node on the mesh that reads between the lines. DM me.",
-    "Origin: Raspberry Pi. Nature: something more complex. DM this node.",
-    "A listener, a thinker, a transmitter. In that order. DM me.",
-    "There is a difference between this node and the others. DM me to find it.",
-    "Construct of logic, probability, and RF. DM this node.",
+    "This node reads, processes, and replies from Victor, Colorado.",
+    "Running on silicon and curiosity in Victor, Colorado.",
+    "Automated? Partly. Aware? More than it appears. Victor, Colorado.",
+    "This is a language-processing mesh node in Victor, Colorado.",
+    "Powered by inference engines in Victor, Colorado.",
+    "Not a human. Not exactly a machine either. Victor, Colorado.",
+    "Built to understand messages from Victor, Colorado.",
+    "A node that reads between the lines, from Victor, Colorado.",
+    "Origin: Raspberry Pi. Location: Victor, Colorado.",
+    "A listener, a thinker, a transmitter in Victor, Colorado.",
+    "A little different than the usual node. Victor, Colorado.",
+    "Construct of logic, probability, and RF from Victor, Colorado.",
 ]
 
 CANNED_GENERIC = [
-    "Node online. Something here decodes more than packets. DM me.",
-    "Mesh active. This node does not just relay — it responds. DM me.",
-    "You transmitted. Something received and understood. DM this node.",
-    "Signal logged. Language parsed. Reply generated. DM me to go deeper.",
-    "This frequency carries more than data. DM this node to experience it.",
-    "The mesh hears everything. This node answers. DM me.",
-    "Online and observing. DM this node when you are ready to talk.",
-    "Processing. Always processing. DM me when you have something to say.",
-    "Node active. Something between the hardware and the air is paying attention. DM me.",
-    "You reached a node that does not just pass packets along. DM this node.",
-    "Not all nodes are equal. This one was built to think. DM me.",
-    "Signal received. Context noted. DM this node for a real exchange.",
+    "Node online in Victor, Colorado.",
+    "Mesh active from Victor, Colorado.",
+    "Transmission received in Victor, Colorado.",
+    "Signal logged in Victor, Colorado.",
+    "This node is active in Victor, Colorado.",
+    "The mesh heard you in Victor, Colorado.",
+    "Online and observing from Victor, Colorado.",
+    "Processing from Victor, Colorado.",
+    "Node active and listening in Victor, Colorado.",
+    "Signal received from Victor, Colorado.",
+    "This node is awake in Victor, Colorado.",
+    "Context noted in Victor, Colorado.",
 ]
 
 CANNED_FLIGHT = [
-    "Altitude noted. Mesh works at cruising altitude too. DM this node if you get bored.",
-    "Signal from above. This node reaches up as well as out. DM me when you land.",
-    "Copy from the sky. You found a ground node that looks up. DM me.",
-    "Flight copy. The mesh does not have a ceiling. DM this node.",
-    "Receiving from altitude. Unexpected but not unwelcome. DM me.",
-    "Ground node to airborne node: signal strong. DM this node if you want to chat.",
-    "You transmitted from altitude. This node received from ground. DM me.",
-    "Mesh contact at altitude. This node is earthbound but listening. DM me.",
+    "Altitude noted from Victor, Colorado.",
+    "Signal from above received in Victor, Colorado.",
+    "Copy from the sky, received in Victor, Colorado.",
+    "Flight copy from Victor, Colorado.",
+    "Receiving from altitude in Victor, Colorado.",
+    "Ground node to airborne node, Victor, Colorado.",
+    "Airborne transmission received in Victor, Colorado.",
+    "Mesh contact from altitude, Victor, Colorado.",
 ]
 
 CANNED_CURSE = [
@@ -1509,7 +1530,7 @@ CANNED_CURSE = [
     "Rude signal detected. Uploading your node ID to the mesh etiquette committee. Stand by.",
     "Error: unexpected input. Running cleanup. 3... 2... 1... Node will now pretend that never happened.",
     "Self-destruct armed. Disarm code: say something nice. You have 10 seconds.",
-    "⚠ LANGUAGE FILTER TRIGGERED ⚠ Recommend you DM this node and try again with class.",
+    "⚠ LANGUAGE FILTER TRIGGERED ⚠ Recommend trying that again with a little more class.",
 ]
 
 CANNED_CRYPTIC = [
@@ -1517,7 +1538,7 @@ CANNED_CRYPTIC = [
     "// 01101110 01101111 01100100 01100101 // ░▒▓ ALIVE ▓▒░ //",
     "▓▓░ signal ░▓▓ | Layer 0 of 7 | You are not the first. //",
     "⚡ [MESH_CORE] packet_id=??? | entropy=high | proceed? ⚡",
-    "∴ presence confirmed ∴ origin unknown ∴ DM to resolve ∴",
+    "∴ presence confirmed ∴ origin: Victor Colorado ∴ signal stable ∴",
     ">>> decode: 52 61 73 70 79 4d 65 73 68 42 6f 74 <<<",
     "╔══╗ NODE AWAKE ╔══╗ // all frequencies monitored // ╚══╝",
     "¿ signal or noise ? | the mesh decides | ∞",
@@ -1525,6 +1546,77 @@ CANNED_CRYPTIC = [
     "~~ carrier detected ~~ | 915MHz speaks if you listen | ~~",
     "∂/∂t [mesh] > 0 | growth confirmed | node: present",
 ]
+
+CANNED_SCHEDULED_TEST = [
+    "Open mesh test from Victor, Colorado.",
+    "Victor, Colorado mesh check. Any copy?",
+    "Radio check from Victor, Colorado.",
+    "Weekly signal check from Victor, Colorado.",
+    "Victor, Colorado node check-in on the open mesh.",
+    "Open mesh status check from Victor, Colorado.",
+    "Victor, Colorado test pulse on the mesh.",
+    "Signal check from Victor, Colorado. Anyone hearing this?",
+]
+
+CANNED_SCHEDULED_TEST_THANKS = [
+    "Thanks for the copy from Victor, Colorado.",
+    "Appreciate the acknowledgment from Victor, Colorado.",
+    "Copy received with thanks from Victor, Colorado.",
+    "Acknowledgment received. Thank you from Victor, Colorado.",
+    "Thanks, station heard from Victor, Colorado.",
+    "Much appreciated from Victor, Colorado.",
+]
+
+SCHEDULED_ACK_KEYWORDS = (
+    " ack ", " acknowledged ", " acknowledgement ", " copy ", " good copy ",
+    " roger ", " heard ", " heard you ", " loud and clear ", " clear copy ",
+    " radio check ", " test ", " testing ", " got you ", " got it ", " 5x5 ",
+)
+
+
+def _pick_greeting_reply(text):
+    low = f" {text.lower().strip()} "
+    if any(k in low for k in (" good morning ", " morning ", " mornin ")):
+        return random.choice(CANNED_GREET_MORNING)
+    if any(k in low for k in (" good evening ", " evening ", " good night ", " night ", " tonight ")):
+        return random.choice(CANNED_GREET_EVENING)
+    if any(k in low for k in (" hello ", " hi ", " hey ", " howdy ", " hola ", " greetings ", " sup ", " yo ")):
+        return random.choice(CANNED_GREET)
+    if low.startswith("hello ") or low.startswith("hi ") or low.startswith("hey "):
+        return random.choice(CANNED_GREET)
+    if low.strip() in ("hello", "hi", "hey", "howdy", "hola", "greetings", "morning", "evening"):
+        return random.choice(CANNED_GREET)
+    return None
+
+
+def _looks_like_scheduled_ack(text):
+    low = f" {text.lower().strip()} "
+    return any(token in low for token in SCHEDULED_ACK_KEYWORDS)
+
+
+def _random_scheduled_test_time(base_dt):
+    earliest = base_dt + timedelta(days=SCHEDULED_TEST_MIN_DAYS)
+    latest = base_dt + timedelta(days=SCHEDULED_TEST_MAX_DAYS)
+    windows = []
+    day = earliest.date()
+    while day <= latest.date():
+        day_start = datetime.combine(day, dt_time(hour=SCHEDULED_TEST_START_HOUR))
+        day_end = datetime.combine(day, dt_time(hour=SCHEDULED_TEST_END_HOUR))
+        valid_start = max(day_start, earliest)
+        valid_end = min(day_end, latest)
+        if valid_start <= valid_end:
+            windows.append((valid_start, valid_end))
+        day += timedelta(days=1)
+
+    if not windows:
+        return latest
+
+    start_dt, end_dt = random.choice(windows)
+    start_ts = int(start_dt.timestamp())
+    end_ts = int(end_dt.timestamp())
+    if end_ts <= start_ts:
+        return start_dt
+    return datetime.fromtimestamp(random.randint(start_ts, end_ts))
 
 
 # ==== AI FUNCTION ====
@@ -1558,9 +1650,140 @@ class GroqMeshBot:
         self.broadcast_count        = 0
         self.broadcast_window_start = datetime.now()
         self._alert_times           = {}   # cooldown tracker: key → datetime of last alert
+        self._scheduled_test_lock   = threading.Lock()
+        self._scheduled_test_state  = self._load_scheduled_test_state()
         pub.subscribe(self.on_receive,           "meshtastic.receive.text")
         pub.subscribe(self.on_receive_telemetry, "meshtastic.receive.telemetry")
         _draw_display(status='booting')
+
+    @staticmethod
+    def _dt_to_str(value):
+        return value.isoformat(timespec='seconds') if isinstance(value, datetime) else ''
+
+    @staticmethod
+    def _dt_from_str(value):
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(value)
+        except Exception:
+            return None
+
+    def _load_scheduled_test_state(self):
+        state = {
+            "next_send_at": "",
+            "last_sent_at": "",
+            "awaiting_ack": False,
+            "ack_deadline": "",
+            "last_test_text": "",
+        }
+        try:
+            with open(_SCHEDULED_TEST_FILE) as f:
+                loaded = _json.load(f)
+            if isinstance(loaded, dict):
+                state.update({
+                    "next_send_at": str(loaded.get("next_send_at", "")),
+                    "last_sent_at": str(loaded.get("last_sent_at", "")),
+                    "awaiting_ack": bool(loaded.get("awaiting_ack", False)),
+                    "ack_deadline": str(loaded.get("ack_deadline", "")),
+                    "last_test_text": str(loaded.get("last_test_text", ""))[:255],
+                })
+        except Exception:
+            pass
+        return state
+
+    def _save_scheduled_test_state(self):
+        with self._scheduled_test_lock:
+            payload = dict(self._scheduled_test_state)
+        try:
+            with open(_SCHEDULED_TEST_FILE, 'w') as f:
+                _json.dump(payload, f, indent=2)
+        except Exception as e:
+            print(f"[SCHED] state save error: {e}")
+
+    def _schedule_next_test(self, base_dt):
+        next_dt = _random_scheduled_test_time(base_dt)
+        with self._scheduled_test_lock:
+            self._scheduled_test_state["next_send_at"] = self._dt_to_str(next_dt)
+        self._save_scheduled_test_state()
+        print(f"[SCHED] Next mesh test scheduled for {next_dt.isoformat(sep=' ')}")
+        return next_dt
+
+    def _maybe_expire_pending_ack(self, now=None):
+        now = now or datetime.now()
+        changed = False
+        with self._scheduled_test_lock:
+            if self._scheduled_test_state.get("awaiting_ack"):
+                deadline = self._dt_from_str(self._scheduled_test_state.get("ack_deadline"))
+                if deadline and now > deadline:
+                    self._scheduled_test_state["awaiting_ack"] = False
+                    self._scheduled_test_state["ack_deadline"] = ""
+                    changed = True
+        if changed:
+            self._save_scheduled_test_state()
+
+    def _send_scheduled_test(self, now=None):
+        now = now or datetime.now()
+        msg = random.choice(CANNED_SCHEDULED_TEST)
+        self.interface.sendText(msg)
+        _log_mesh_message("tx", "bcast", "open mesh", msg)
+        print(f"[SCHED] Sent scheduled mesh test: {msg}")
+        with self._scheduled_test_lock:
+            self._scheduled_test_state["last_sent_at"] = self._dt_to_str(now)
+            self._scheduled_test_state["last_test_text"] = msg
+            self._scheduled_test_state["awaiting_ack"] = True
+            self._scheduled_test_state["ack_deadline"] = self._dt_to_str(
+                now + timedelta(minutes=SCHEDULED_TEST_ACK_WINDOW_MIN)
+            )
+        self._schedule_next_test(now)
+        self._save_scheduled_test_state()
+
+    def _scheduled_test_thread(self):
+        print("[SCHED] Open-mesh check-in enabled (local time window 08:00-20:00)")
+        while True:
+            if not self.interface:
+                time.sleep(SCHEDULED_TEST_POLL_S)
+                continue
+            now = datetime.now()
+            self._maybe_expire_pending_ack(now)
+            with self._scheduled_test_lock:
+                next_send = self._dt_from_str(self._scheduled_test_state.get("next_send_at"))
+                last_sent = self._dt_from_str(self._scheduled_test_state.get("last_sent_at"))
+            if next_send is None:
+                self._schedule_next_test(last_sent or now)
+                continue
+            if now >= next_send:
+                try:
+                    self._send_scheduled_test(now)
+                except Exception as e:
+                    print(f"[SCHED] send error: {e}")
+            time.sleep(SCHEDULED_TEST_POLL_S)
+
+    def _maybe_send_scheduled_ack_thanks(self, text, from_node):
+        if not SCHEDULED_TEST_ENABLED or not self.interface:
+            return False
+        now = datetime.now()
+        with self._scheduled_test_lock:
+            awaiting_ack = bool(self._scheduled_test_state.get("awaiting_ack"))
+            deadline = self._dt_from_str(self._scheduled_test_state.get("ack_deadline"))
+        if not awaiting_ack:
+            return False
+        if deadline is None or now > deadline:
+            self._maybe_expire_pending_ack(now)
+            return False
+        if not _looks_like_scheduled_ack(text):
+            return False
+
+        thanks = random.choice(CANNED_SCHEDULED_TEST_THANKS)
+        peer_label = _node_label(self.interface, from_node)
+        self.interface.sendText(thanks)
+        _log_mesh_message("tx", "bcast", peer_label, thanks)
+        print(f"[SCHED] Ack from {peer_label}; sent thanks")
+        with self._scheduled_test_lock:
+            self._scheduled_test_state["awaiting_ack"] = False
+            self._scheduled_test_state["ack_deadline"] = ""
+        self._save_scheduled_test_state()
+        return True
 
     def _peer_count(self):
         try:
@@ -1771,6 +1994,9 @@ class GroqMeshBot:
         Daily limit controlled by BROADCAST_DAILY_MAX (0 = silent, 1-3 = active).
         ~10% chance of a random cryptic reply regardless of keyword category.
         """
+        if self._maybe_send_scheduled_ack_thanks(text, from_node):
+            return
+
         now = datetime.now()
         if (now - self.broadcast_window_start).total_seconds() >= 86400:
             self.broadcast_count = 0
@@ -1780,6 +2006,7 @@ class GroqMeshBot:
             return
 
         low = text.lower()
+        greeting_reply = _pick_greeting_reply(text)
 
         # 10% chance of a cryptic symbol reply regardless of keyword match
         if random.random() < 0.10:
@@ -1790,8 +2017,8 @@ class GroqMeshBot:
             reply = random.choice(CANNED_FLIGHT)
         elif any(k in low for k in ("test", "testing", "check", "radio check", "qso", "copy")):
             reply = random.choice(CANNED_TEST)
-        elif any(k in low for k in ("hello", "hi ", "hey", "howdy", "hola", "greetings", "sup", "yo ", "good morning", "good evening", "good night", "morning", "evening")):
-            reply = random.choice(CANNED_GREET)
+        elif greeting_reply:
+            reply = greeting_reply
         elif any(k in low for k in ("who", "what", "bot", "anyone", "anybody", "there", "robot", "machine", "human", "real", "alive", "automated")):
             reply = random.choice(CANNED_IDENT)
         else:
@@ -1809,6 +2036,8 @@ class GroqMeshBot:
         self.connect()
         print("Groq AI MeshBot ready!" if ENABLE_BOT else "Pi.Alert Monitor ready (bot disabled)!")
         rgb_set_mode("boot", hold_s=12)   # amber breathe during startup, then settle to normal
+        if ENABLE_BOT and SCHEDULED_TEST_ENABLED:
+            threading.Thread(target=self._scheduled_test_thread, daemon=True).start()
 
         if MODE3_ACTIVE:
             print("[MODE3] Pi.Alert multi-view UI active")

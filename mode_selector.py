@@ -108,6 +108,7 @@ def _settings_html(cfg):
 
     bot_checked = 'checked' if cfg.get('enable_bot', True) else ''
     ip_fwd_checked = 'checked' if cfg.get('ip_forward_persistent', False) else ''
+    scheduled_test_checked = 'checked' if cfg.get('scheduled_test_enabled', False) else ''
     return f"""<!DOCTYPE html><html><head>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>MeshBot Settings</title><style>
@@ -143,6 +144,10 @@ button{{margin-top:24px;width:100%;padding:12px;background:#0a6;color:#fff;borde
 <label>Broadcast Daily Max</label>
 <input type="text" name="broadcast_daily_max" value="{v('broadcast_daily_max', '3')}">
 <div class="hint">0=silent, 1&ndash;3 open-channel replies per day</div>
+<div class="row">
+<input type="checkbox" name="scheduled_test_enabled" value="true" {scheduled_test_checked}>
+<span style="font-size:13px">Enable scheduled open-mesh test check-ins</span></div>
+<div class="hint">Sends a random open-mesh test between 8am and 8pm local time, at least 3 days apart, and says thanks if it hears an acknowledgment</div>
 </div>
 <div class="sec"><h3>Pi.Alert</h3>
 <label>Base URL</label>
@@ -284,6 +289,7 @@ def launch_settings_portal(lcd):
             cfg['nws_longitude']     = get('nws_longitude').strip()
             cfg['pihole_base_url']   = get('pihole_base_url')
             cfg['enable_bot']        = (get('enable_bot') == 'true')
+            cfg['scheduled_test_enabled'] = (get('scheduled_test_enabled') == 'true')
             sp = get('serial_port').strip()
             cfg['serial_port']       = sp if sp else None
             alert_raw = get('alert_node')
