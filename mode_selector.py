@@ -140,13 +140,19 @@ button{{margin-top:24px;width:100%;padding:12px;background:#0a6;color:#fff;borde
 <div class="hint">e.g. /dev/ttyACM0 &mdash; leave blank to auto-detect</div>
 <label>Alert Node(s)</label>
 <input type="text" name="alert_node" value="{v('alert_node')}">
-<div class="hint">Node ID(s) for anomaly DMs &mdash; comma-separate multiple</div>
-<label>Broadcast Daily Max</label>
-<input type="text" name="broadcast_daily_max" value="{v('broadcast_daily_max', '3')}">
-<div class="hint">0=silent, 1&ndash;3 open-channel replies per day</div>
-<div class="row">
-<input type="checkbox" name="scheduled_test_enabled" value="true" {scheduled_test_checked}>
-<span style="font-size:13px">Enable scheduled open-mesh test check-ins</span></div>
+    <div class="hint">Node ID(s) for anomaly DMs &mdash; comma-separate multiple</div>
+    <label>Broadcast Daily Max</label>
+    <input type="text" name="broadcast_daily_max" value="{v('broadcast_daily_max', '3')}">
+    <div class="hint">0=silent, 1&ndash;3 open-channel replies per day</div>
+    <label>Canned Reply City</label>
+    <input type="text" name="canned_reply_city" value="{v('canned_reply_city', 'Victor')}">
+    <div class="hint">Used in open-mesh canned replies, scheduled tests, and manual test messages</div>
+    <label>Canned Reply State</label>
+    <input type="text" name="canned_reply_state" value="{v('canned_reply_state', 'Colorado')}">
+    <div class="hint">Example: Colorado &mdash; leave the bot code alone and update the location here instead</div>
+    <div class="row">
+    <input type="checkbox" name="scheduled_test_enabled" value="true" {scheduled_test_checked}>
+    <span style="font-size:13px">Enable scheduled open-mesh test check-ins</span></div>
 <div class="hint">Sends a random open-mesh test between 8am and 8pm local time, at least 3 days apart, and says thanks if it hears an acknowledgment</div>
 </div>
 <div class="sec"><h3>Pi.Alert</h3>
@@ -287,6 +293,8 @@ def launch_settings_portal(lcd):
             cfg['pialert_api_key']   = get('pialert_api_key')
             cfg['nws_latitude']      = get('nws_latitude').strip()
             cfg['nws_longitude']     = get('nws_longitude').strip()
+            cfg['canned_reply_city'] = get('canned_reply_city').strip() or 'Victor'
+            cfg['canned_reply_state'] = get('canned_reply_state').strip() or 'Colorado'
             cfg['pihole_base_url']   = get('pihole_base_url')
             cfg['enable_bot']        = (get('enable_bot') == 'true')
             cfg['scheduled_test_enabled'] = (get('scheduled_test_enabled') == 'true')

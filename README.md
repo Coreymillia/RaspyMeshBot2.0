@@ -79,12 +79,12 @@ The boot selector waits indefinitely — nothing launches until you press a butt
 **Direct messages (DMs):** Anyone on the mesh who sends a private message to this node gets a real AI-generated reply powered by **Groq LLaMA 3.1**. The reply is sent back as a DM.
 
 **Open channel:** The bot also listens to public mesh traffic, but this side is **not Groq-powered**. Open-mesh replies are all **local canned responses** so they stay fast, short, and radio-friendly. The daily broadcast limit is configurable from **0 to 3 replies per 24 hours** (default 3) — set to 0 to go completely silent on the open channel. It responds to:
-- `test`, `testing`, `check`, `radio check`, `qso`, `copy` → acknowledges the test from Victor, Colorado
+- `test`, `testing`, `check`, `radio check`, `qso`, `copy` → acknowledges the test from your configured city/state
 - `hello`, `hi`, `hey`, `howdy`, `hola`, `good morning`, `good evening`, etc. → sends a friendly greeting back so the channel does not feel empty
 - `who`, `what`, `bot`, `anyone`, `robot`, `human`, `alive`, etc. → explains what the node is
 - `flight`, `airline`, `flying`, `altitude`, `wifi`, etc. → airborne-specific reply
 - Profanity → dramatic self-destruct humour reply
-- Everything else → short generic acknowledgments from Victor, Colorado
+- Everything else → short generic acknowledgments from your configured city/state
 - **10% chance on any message** → random cryptic symbol/hex reply regardless of keywords (current live setting)
 
 ### Scheduled open-mesh check-ins
@@ -97,7 +97,7 @@ If `scheduled_test_enabled` is turned on, the bot also schedules its own random 
 - Chooses the next send time randomly within a **3 to 7 day** window
 - If someone replies with words like `ack`, `copy`, `heard`, or `test` within the acknowledgment window, the bot sends a short thank-you back on the open mesh
 
-You can disable this any time in the **Settings Portal → Meshtastic** section.
+You can disable this any time in the **Settings Portal → Meshtastic** section. That same section also lets you change the city/state label used in canned open-mesh replies, scheduled tests, and manual test transmissions.
 
 There are dozens of canned replies across multiple categories so responses do not feel repetitive, even without much local mesh traffic.
 
@@ -400,7 +400,7 @@ pip install -r requirements.txt
 
 **Option A — Web Settings Portal (recommended)**
 
-After installing the service files (step 6) and rebooting, press the **joystick** on the HAT at the boot screen. The LCD shows `http://[ip]:8080`. Open that URL from any phone or laptop on your network and fill in all your keys and URLs. Save — done.
+After installing the service files (step 6) and rebooting, press the **joystick** on the HAT at the boot screen. The LCD shows `http://[ip]:8080`. Open that URL from any phone or laptop on your network and fill in all your keys and URLs, including the city/state label used in canned open-mesh replies. Save — done.
 
 **Option B — Edit config.json manually**
 
@@ -416,6 +416,8 @@ Fill in:
     "groq_api_key": "your_groq_key",
     "pialert_base_url": "http://YOUR_PIALERT_IP/pialert/api/",
     "pialert_api_key": "your_pialert_api_key",
+    "canned_reply_city": "Victor",
+    "canned_reply_state": "Colorado",
     "alert_node": ["!your_node_id"],
     "pihole_base_url": "http://YOUR_PIHOLE_IP/api",
     "enable_bot": true,

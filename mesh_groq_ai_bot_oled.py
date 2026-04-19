@@ -87,6 +87,8 @@ DNS_SPIKE_THRESHOLD   = _c.get('dns_spike_threshold', 300)  # queries/poll above
 ENABLE_BOT            = _c.get('enable_bot', True)   # False = Pi.Alert/Pi-hole monitor only, no Groq/Meshtastic
 NWS_LATITUDE          = str(_c.get('nws_latitude', '')).strip()
 NWS_LONGITUDE         = str(_c.get('nws_longitude', '')).strip()
+CANNED_REPLY_CITY     = str(_c.get('canned_reply_city', 'Victor')).strip() or 'Victor'
+CANNED_REPLY_STATE    = str(_c.get('canned_reply_state', 'Colorado')).strip() or 'Colorado'
 NWS_REFRESH_S         = 900
 SCHEDULED_TEST_ENABLED        = bool(_c.get('scheduled_test_enabled', False))
 SCHEDULED_TEST_MIN_DAYS       = 3
@@ -1496,90 +1498,107 @@ def send_long_message(interface, text, destinationId):
 # ==== CANNED BROADCAST REPLIES ====
 # Open-channel acknowledgements and flavor replies.
 
-CANNED_TEST = [
-    "Test received from Victor, Colorado.",
-    "Test acknowledged from Victor, Colorado.",
-    "Radio check confirmed from Victor, Colorado.",
-    "Copy on your test from Victor, Colorado.",
-    "Test heard loud and clear from Victor, Colorado.",
-    "Signal check passed from Victor, Colorado.",
-    "Your test came through from Victor, Colorado.",
-    "Transmission confirmed from Victor, Colorado.",
-    "Packet received from Victor, Colorado.",
-    "Test copied from Victor, Colorado.",
-    "Acknowledged from Victor, Colorado.",
-    "Loud and clear from Victor, Colorado.",
-]
+def _canned_location():
+    return f"{CANNED_REPLY_CITY}, {CANNED_REPLY_STATE}"
 
-CANNED_GREET = [
-    "Hello from Victor, Colorado. Good to hear you on the mesh.",
-    "Hey there from Victor, Colorado.",
-    "Greetings from Victor, Colorado.",
-    "Hi from Victor, Colorado. You're not talking to empty air.",
-    "Hello from the mesh in Victor, Colorado.",
-    "Howdy from Victor, Colorado.",
-    "Good to hear you from Victor, Colorado.",
-    "Signal heard in Victor, Colorado. Hello back.",
-    "Greetings traveler, from Victor, Colorado.",
-    "Hello, station heard from Victor, Colorado.",
-    "Hey from Victor, Colorado.",
-    "You were heard in Victor, Colorado.",
-]
 
-CANNED_GREET_MORNING = [
-    "Good morning from Victor, Colorado.",
-    "Morning from Victor, Colorado. Hope the mesh is treating you well.",
-    "Good morning, station heard from Victor, Colorado.",
-    "Morning from Victor, Colorado. You're coming through clearly.",
-]
+def _canned_location_compact():
+    return _canned_location().replace(", ", " ")
 
-CANNED_GREET_EVENING = [
-    "Good evening from Victor, Colorado.",
-    "Evening from Victor, Colorado. Good to hear you on the mesh.",
-    "Good evening, station heard from Victor, Colorado.",
-    "Evening from Victor, Colorado. You're coming through clearly.",
-]
 
-CANNED_IDENT = [
-    "This node reads, processes, and replies from Victor, Colorado.",
-    "Running on silicon and curiosity in Victor, Colorado.",
-    "Automated? Partly. Aware? More than it appears. Victor, Colorado.",
-    "This is a language-processing mesh node in Victor, Colorado.",
-    "Powered by inference engines in Victor, Colorado.",
-    "Not a human. Not exactly a machine either. Victor, Colorado.",
-    "Built to understand messages from Victor, Colorado.",
-    "A node that reads between the lines, from Victor, Colorado.",
-    "Origin: Raspberry Pi. Location: Victor, Colorado.",
-    "A listener, a thinker, a transmitter in Victor, Colorado.",
-    "A little different than the usual node. Victor, Colorado.",
-    "Construct of logic, probability, and RF from Victor, Colorado.",
-]
+def _render_canned_replies(templates):
+    location = _canned_location()
+    location_compact = _canned_location_compact()
+    return [
+        template.format(location=location, location_compact=location_compact)
+        for template in templates
+    ]
 
-CANNED_GENERIC = [
-    "Node online in Victor, Colorado.",
-    "Mesh active from Victor, Colorado.",
-    "Transmission received in Victor, Colorado.",
-    "Signal logged in Victor, Colorado.",
-    "This node is active in Victor, Colorado.",
-    "The mesh heard you in Victor, Colorado.",
-    "Online and observing from Victor, Colorado.",
-    "Processing from Victor, Colorado.",
-    "Node active and listening in Victor, Colorado.",
-    "Signal received from Victor, Colorado.",
-    "This node is awake in Victor, Colorado.",
-    "Context noted in Victor, Colorado.",
-]
 
-CANNED_FLIGHT = [
-    "Altitude noted from Victor, Colorado.",
-    "Signal from above received in Victor, Colorado.",
-    "Copy from the sky, received in Victor, Colorado.",
-    "Flight copy from Victor, Colorado.",
-    "Receiving from altitude in Victor, Colorado.",
-    "Ground node to airborne node, Victor, Colorado.",
-    "Airborne transmission received in Victor, Colorado.",
-    "Mesh contact from altitude, Victor, Colorado.",
-]
+CANNED_TEST = _render_canned_replies([
+    "Test received from {location}.",
+    "Test acknowledged from {location}.",
+    "Radio check confirmed from {location}.",
+    "Copy on your test from {location}.",
+    "Test heard loud and clear from {location}.",
+    "Signal check passed from {location}.",
+    "Your test came through from {location}.",
+    "Transmission confirmed from {location}.",
+    "Packet received from {location}.",
+    "Test copied from {location}.",
+    "Acknowledged from {location}.",
+    "Loud and clear from {location}.",
+])
+
+CANNED_GREET = _render_canned_replies([
+    "Hello from {location}. Good to hear you on the mesh.",
+    "Hey there from {location}.",
+    "Greetings from {location}.",
+    "Hi from {location}. You're not talking to empty air.",
+    "Hello from the mesh in {location}.",
+    "Howdy from {location}.",
+    "Good to hear you from {location}.",
+    "Signal heard in {location}. Hello back.",
+    "Greetings traveler, from {location}.",
+    "Hello, station heard from {location}.",
+    "Hey from {location}.",
+    "You were heard in {location}.",
+])
+
+CANNED_GREET_MORNING = _render_canned_replies([
+    "Good morning from {location}.",
+    "Morning from {location}. Hope the mesh is treating you well.",
+    "Good morning, station heard from {location}.",
+    "Morning from {location}. You're coming through clearly.",
+])
+
+CANNED_GREET_EVENING = _render_canned_replies([
+    "Good evening from {location}.",
+    "Evening from {location}. Good to hear you on the mesh.",
+    "Good evening, station heard from {location}.",
+    "Evening from {location}. You're coming through clearly.",
+])
+
+CANNED_IDENT = _render_canned_replies([
+    "This node reads, processes, and replies from {location}.",
+    "Running on silicon and curiosity in {location}.",
+    "Automated? Partly. Aware? More than it appears. {location}.",
+    "This is a language-processing mesh node in {location}.",
+    "Powered by inference engines in {location}.",
+    "Not a human. Not exactly a machine either. {location}.",
+    "Built to understand messages from {location}.",
+    "A node that reads between the lines, from {location}.",
+    "Origin: Raspberry Pi. Location: {location}.",
+    "A listener, a thinker, a transmitter in {location}.",
+    "A little different than the usual node. {location}.",
+    "Construct of logic, probability, and RF from {location}.",
+])
+
+CANNED_GENERIC = _render_canned_replies([
+    "Node online in {location}.",
+    "Mesh active from {location}.",
+    "Transmission received in {location}.",
+    "Signal logged in {location}.",
+    "This node is active in {location}.",
+    "The mesh heard you in {location}.",
+    "Online and observing from {location}.",
+    "Processing from {location}.",
+    "Node active and listening in {location}.",
+    "Signal received from {location}.",
+    "This node is awake in {location}.",
+    "Context noted in {location}.",
+])
+
+CANNED_FLIGHT = _render_canned_replies([
+    "Altitude noted from {location}.",
+    "Signal from above received in {location}.",
+    "Copy from the sky, received in {location}.",
+    "Flight copy from {location}.",
+    "Receiving from altitude in {location}.",
+    "Ground node to airborne node, {location}.",
+    "Airborne transmission received in {location}.",
+    "Mesh contact from altitude, {location}.",
+])
 
 CANNED_CURSE = [
     # Self-destruct sequence — dramatic and funny
@@ -1593,52 +1612,52 @@ CANNED_CURSE = [
     "⚠ LANGUAGE FILTER TRIGGERED ⚠ Recommend trying that again with a little more class.",
 ]
 
-CANNED_CRYPTIC = [
+CANNED_CRYPTIC = _render_canned_replies([
     # Random cryptic / symbol-filled replies — fires occasionally on any broadcast
     "// 01101110 01101111 01100100 01100101 // ░▒▓ ALIVE ▓▒░ //",
     "▓▓░ signal ░▓▓ | Layer 0 of 7 | You are not the first. //",
     "⚡ [MESH_CORE] packet_id=??? | entropy=high | proceed? ⚡",
-    "∴ presence confirmed ∴ origin: Victor Colorado ∴ signal stable ∴",
+    "∴ presence confirmed ∴ origin: {location_compact} ∴ signal stable ∴",
     ">>> decode: 52 61 73 70 79 4d 65 73 68 42 6f 74 <<<",
     "╔══╗ NODE AWAKE ╔══╗ // all frequencies monitored // ╚══╝",
     "¿ signal or noise ? | the mesh decides | ∞",
     "⬡ packet received | context: [REDACTED] | reply: this ⬡",
     "~~ carrier detected ~~ | 915MHz speaks if you listen | ~~",
     "∂/∂t [mesh] > 0 | growth confirmed | node: present",
-]
+])
 
-CANNED_SCHEDULED_TEST = [
-    "Open mesh test from Victor, Colorado.",
-    "Victor, Colorado mesh check. Any copy?",
-    "Radio check from Victor, Colorado.",
-    "Weekly signal check from Victor, Colorado.",
-    "Victor, Colorado node check-in on the open mesh.",
-    "Open mesh status check from Victor, Colorado.",
-    "Victor, Colorado test pulse on the mesh.",
-    "Signal check from Victor, Colorado. Anyone hearing this?",
-]
+CANNED_SCHEDULED_TEST = _render_canned_replies([
+    "Open mesh test from {location}.",
+    "{location} mesh check. Any copy?",
+    "Radio check from {location}.",
+    "Weekly signal check from {location}.",
+    "{location} node check-in on the open mesh.",
+    "Open mesh status check from {location}.",
+    "{location} test pulse on the mesh.",
+    "Signal check from {location}. Anyone hearing this?",
+])
 
-CANNED_MANUAL_TEST = [
-    "Open mesh test from Victor, Colorado.",
-    "Victor, Colorado mesh check. Any copy?",
-    "Radio check from Victor, Colorado.",
-    "Victor, Colorado calling with a quick signal check.",
-    "Open mesh status check from Victor, Colorado.",
-    "Victor, Colorado test pulse on the mesh.",
-    "Victor, Colorado station check. Loud and clear?",
-    "Mesh roll call from Victor, Colorado.",
-    "Victor, Colorado node check-in on the open mesh.",
-    "Signal check from Victor, Colorado. Anyone hearing this?",
-]
+CANNED_MANUAL_TEST = _render_canned_replies([
+    "Open mesh test from {location}.",
+    "{location} mesh check. Any copy?",
+    "Radio check from {location}.",
+    "{location} calling with a quick signal check.",
+    "Open mesh status check from {location}.",
+    "{location} test pulse on the mesh.",
+    "{location} station check. Loud and clear?",
+    "Mesh roll call from {location}.",
+    "{location} node check-in on the open mesh.",
+    "Signal check from {location}. Anyone hearing this?",
+])
 
-CANNED_SCHEDULED_TEST_THANKS = [
-    "Thanks for the copy from Victor, Colorado.",
-    "Appreciate the acknowledgment from Victor, Colorado.",
-    "Copy received with thanks from Victor, Colorado.",
-    "Acknowledgment received. Thank you from Victor, Colorado.",
-    "Thanks, station heard from Victor, Colorado.",
-    "Much appreciated from Victor, Colorado.",
-]
+CANNED_SCHEDULED_TEST_THANKS = _render_canned_replies([
+    "Thanks for the copy from {location}.",
+    "Appreciate the acknowledgment from {location}.",
+    "Copy received with thanks from {location}.",
+    "Acknowledgment received. Thank you from {location}.",
+    "Thanks, station heard from {location}.",
+    "Much appreciated from {location}.",
+])
 
 SCHEDULED_ACK_KEYWORDS = (
     " ack ", " acknowledged ", " acknowledgement ", " copy ", " good copy ",
