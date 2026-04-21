@@ -14,7 +14,7 @@ Mode 3 button layout (HAT buttons, active LOW):
 """
 
 from pubsub import pub
-from datetime import datetime, timedelta, time as dt_time
+from datetime import datetime, timedelta, time as dt_time, date as dt_date
 
 # ==== PUBSUB FIX ====
 def safe_sendMessage(topic, **kwargs):
@@ -34,7 +34,7 @@ if not hasattr(pub, "_original_sendMessage"):
     pub._original_sendMessage = pub.sendMessage
     pub.sendMessage = safe_sendMessage
 
-import time, sys, os, threading, random, textwrap
+import time, sys, os, threading, random, textwrap, re
 import meshtastic
 import meshtastic.serial_interface
 import requests
@@ -91,10 +91,9 @@ CANNED_REPLY_CITY     = str(_c.get('canned_reply_city', 'Victor')).strip() or 'V
 CANNED_REPLY_STATE    = str(_c.get('canned_reply_state', 'Colorado')).strip() or 'Colorado'
 NWS_REFRESH_S         = 900
 SCHEDULED_TEST_ENABLED        = bool(_c.get('scheduled_test_enabled', False))
-SCHEDULED_TEST_MIN_DAYS       = 3
-SCHEDULED_TEST_MAX_DAYS       = 7
 SCHEDULED_TEST_START_HOUR     = 8
 SCHEDULED_TEST_END_HOUR       = 20
+SCHEDULED_TEST_HOLIDAY_HOUR   = 11
 SCHEDULED_TEST_ACK_WINDOW_MIN = 180
 SCHEDULED_TEST_POLL_S         = 60
 
@@ -1600,18 +1599,6 @@ CANNED_FLIGHT = _render_canned_replies([
     "Mesh contact from altitude, {location}.",
 ])
 
-CANNED_CURSE = [
-    # Self-destruct sequence — dramatic and funny
-    "Language anomaly detected. Initiating self-destruct sequence. T-minus 10.",
-    "⚠ PROFANITY DETECTED ⚠ Activating termination protocol. Goodbye.",
-    "This message will self-destruct. 5... 4... 3... Your mission, should you accept it — watch your language.",
-    "ALERT: Threshold exceeded. Node entering shutdown mode. Last words: seriously?",
-    "Rude signal detected. Uploading your node ID to the mesh etiquette committee. Stand by.",
-    "Error: unexpected input. Running cleanup. 3... 2... 1... Node will now pretend that never happened.",
-    "Self-destruct armed. Disarm code: say something nice. You have 10 seconds.",
-    "⚠ LANGUAGE FILTER TRIGGERED ⚠ Recommend trying that again with a little more class.",
-]
-
 CANNED_CRYPTIC = _render_canned_replies([
     # Random cryptic / symbol-filled replies — fires occasionally on any broadcast
     "// 01101110 01101111 01100100 01100101 // ░▒▓ ALIVE ▓▒░ //",
@@ -1624,18 +1611,137 @@ CANNED_CRYPTIC = _render_canned_replies([
     "⬡ packet received | context: [REDACTED] | reply: this ⬡",
     "~~ carrier detected ~~ | 915MHz speaks if you listen | ~~",
     "∂/∂t [mesh] > 0 | growth confirmed | node: present",
+    "▣ signal anomaly logged // mesh remains stable //",
+    "📡 carrier detected // reply path nominal //",
+    ":: packet received :: context unclear :: monitoring ::",
+    "RF echo acknowledged // checksum feels correct //",
+    "▓ mesh pulse observed ▓ origin verified ▓",
+    "signal present // meaning pending // node awake",
+    "🛰 path confirmed // low-noise window open //",
+    "∆ packet drift detected ∆ still within tolerance ∆",
+    "link margin acceptable // traffic continues //",
+    "⌁ decoded enough to respond ⌁ the mesh is listening ⌁",
+    "telemetry of intent incomplete // response emitted //",
+    "⚡ packet touched the edge of understanding ⚡",
+    "mesh heartbeat detected // RF horizon stable //",
+    "[[signal acknowledged]] [[interpretation partial]]",
+    "carrier lock acquired // continuing passive listen //",
+    "📶 symbol stream received // node remains online //",
+    "origin obscured // signal authentic // reply authorized",
+    "0x4d455348 // transport layer humming //",
+    "↯ packet entered buffer ↯ meaning unresolved ↯",
+    "the mesh heard something // that is enough for now //",
+    "Signal received. Meaning uncertain. Mesh remains awake.",
+    "Packet acknowledged. The channel is alive tonight.",
+    "Transmission logged. Context incomplete, response permitted.",
+    "Your signal crossed the mesh. That is noted.",
+    "Readable enough. Replying from the edge of the network.",
+    '[mesh.event] rx_packet() => {{ status: "ok", note: "the static was whispering again" }}',
+    'WARN: carrier_shift_detected(); // someone moved the mountains a little',
+    'const anomaly = scanSpectrum(19.2e3); // returned: "it blinked back"',
+    'meshlog << "packet arrived sideways" << checksum(0xDEADBEEF);',
+    'if (signal.hum > threshold) {{ emit("the line is breathing"); }}',
+    '/* TODO: investigate why node_07 keeps humming that tune */',
+    'trace_route(): hop[3] replied with "who\'s there"',
+    'struct Echo {{ int delay; char* message; }} echo = {{ 42, "it remembered you" }};',
+    '>>> decode(⧖⧖⧖) => "mesh horizon flickered"',
+    'packet.flags |= FLAG_DUSTY; // came in with old air on it',
+    'rx_buffer.push("carrier folded in half"); // no errors thrown',
+    'switch(freq) {{ case 0x1F: return "the repeater sighed"; default: return "normal"; }}',
+    'log.debug("ghost packet passed through at %s", timestamp());',
+    'auto msg = parse(0b10100101); // output: "mesh feels haunted today"',
+    'heartbeat(): ok; // but it hesitated first',
+    '>>> spectralScan() {{ peak: 7.3, note: "something tapped the line" }}',
+    '# anomaly report',
+    'delta_phase = 3.14',
+    'comment = "your packet took the scenic route"',
+    'rx_event(0xFF) => "static formed a sentence again"',
+    'meshctl: route-table rearranged itself politely',
+    'fn decode_noise() -> &str {{ "uplink behaving like it knows a secret" }}',
+    '[WARN] buffer_overflow: dreams spilled into the logs',
+    'carrier.align() // returned: improbable',
+    'node_03.status = MUTTERING;',
+    '>>> compile(packet) warning: timestamp smells like ozone',
+    'signal.strength = "contemplative"; // not weak, just thinking',
 ])
 
 CANNED_SCHEDULED_TEST = _render_canned_replies([
-    "Open mesh test from {location}.",
-    "{location} mesh check. Any copy?",
-    "Radio check from {location}.",
-    "Weekly signal check from {location}.",
-    "{location} node check-in on the open mesh.",
-    "Open mesh status check from {location}.",
-    "{location} test pulse on the mesh.",
-    "Signal check from {location}. Anyone hearing this?",
+    "W01: test-cycle initiated; confirm mesh stability for new-year rollover",
+    "W02: winter noise floor elevated; request verification from any active node",
+    "W03: cold-weather drift detected; seeking secondary reading",
+    "W04: low-temp carrier compression observed; need external confirmation",
+    "W05: frost-index rising; request mesh echo from nearest node",
+    "W06: timestamp condensation noted; can anyone validate packet clarity",
+    "W07: crystalline static present; looking for independent signal check",
+    "W08: winter midpoint test; reply with current reception quality",
+    "W09: thaw-pattern interference detected; need remote confirmation",
+    "W10: melt-season jitter minimal; request mesh response for verification",
+    "W11: daylight-gain test; any node report improved clarity",
+    "W12: early warm-air distortion; seeking confirmation from field units",
+    "W13: spring resonance detected; request external packet echo",
+    "W14: elastic carrier behavior; need mesh-wide reading",
+    "W15: wind-shear static observed; any node confirm anomaly",
+    "W16: brightened horizon scan; request reception check",
+    "W17: particulate noise present; need pollen-season verification",
+    "W18: warm-air shimmer detected; request checksum comparison",
+    "W19: buoyant routing behavior; any node confirm table stability",
+    "W20: early-summer hum; request mesh response for calibration",
+    "W21: thermal expansion test; need remote antenna reading",
+    "W22: high-sun distortion; request clarity report",
+    "W23: elevated mesh temperature; any node confirm background hum",
+    "W24: midsummer harmonic scan; request independent verification",
+    "W25: heat-index spike; need uplink confirmation",
+    "W26: sun-bleached packet observed; request secondary timestamp reading",
+    "W27: contemplative latency; any node confirm routing delay",
+    "W28: hazy static layer; request mesh-wide clarity check",
+    "W29: pre-storm tension in noise floor; need external validation",
+    "W30: late-summer drift; request packet echo from any node",
+    "W31: cooling trend detected; confirm autumn onset in carrier tone",
+    "W32: sharpened static edges; request reception report",
+    "W33: early-fall packet discipline; need confirmation from field",
+    "W34: routing-table shedding observed; request mesh stability check",
+    "W35: deepened hum; any node confirm cooler-air signature",
+    "W36: equinox alignment; request verification of carrier symmetry",
+    "W37: pre-Halloween interference; need confirmation of unusual patterns",
+    "W38: whisper-like noise detected; request independent scan",
+    "W39: silhouette-shaped interference; any node validate anomaly",
+    "W40: Halloween-cycle test; confirm ghost-packet filtering active",
+    "W41: post-Halloween quiet; request baseline noise reading",
+    "W42: cold-front compression; need clarity confirmation",
+    "W43: pre-Thanksgiving drift; request packet-weight verification",
+    "W44: Thanksgiving-cycle calm; any node confirm stable carrier",
+    "W45: winter-edge static returning; request mesh-wide reading",
+    "W46: frost accumulation on timestamps; need external confirmation",
+    "W47: pre-solstice dimming; request horizon-scan verification",
+    "W48: winter alignment stable; any node confirm deep-tone carrier",
+    "W49: pre-Christmas chime-harmonics detected; request validation",
+    "W50: Christmas-cycle silence layer; need reception confirmation",
+    "W51: year-end routing cleanup; request table-integrity check",
+    "W52: new-year-eve static rising; any node confirm cycle-end behavior",
 ])
+
+CANNED_HOLIDAY_TESTS = {
+    "new_year": _render_canned_replies([
+        "New Year mesh test from {location}. 00:00 on the channel.",
+        "Midnight rollover test from {location}. Happy New Year, mesh.",
+        "New Year carrier check from {location}. Fresh calendar, same signal.",
+    ]),
+    "halloween": _render_canned_replies([
+        "Halloween mesh test from {location}. Static is wearing a costume.",
+        "Spooky season signal check from {location}. Any ghosts on the repeater?",
+        "Halloween carrier test from {location}. The spectrum looks haunted.",
+    ]),
+    "thanksgiving": _render_canned_replies([
+        "Thanksgiving mesh test from {location}. Grateful for any copy.",
+        "Holiday signal check from {location}. Thanksgiving traffic on the mesh.",
+        "Thanksgiving carrier check from {location}. Hope your signal and pie are stable.",
+    ]),
+    "christmas": _render_canned_replies([
+        "Christmas mesh test from {location}. Holiday carrier online.",
+        "Christmas signal check from {location}. Seasonal packets in the air.",
+        "Holiday mesh ping from {location}. Merry Christmas and good copy.",
+    ]),
+}
 
 CANNED_MANUAL_TEST = _render_canned_replies([
     "Open mesh test from {location}.",
@@ -1651,18 +1757,50 @@ CANNED_MANUAL_TEST = _render_canned_replies([
 ])
 
 CANNED_SCHEDULED_TEST_THANKS = _render_canned_replies([
-    "Thanks for the copy from {location}.",
-    "Appreciate the acknowledgment from {location}.",
-    "Copy received with thanks from {location}.",
-    "Acknowledgment received. Thank you from {location}.",
-    "Thanks, station heard from {location}.",
-    "Much appreciated from {location}.",
+    "ack: reply received; signal confirmed",
+    "copy: mesh response logged; thanks for the check-in",
+    "confirmation received; uplink behaving normally",
+    "mesh echo detected; appreciate the verification",
+    "reply acknowledged; carrier stability noted",
+    "response logged; routing tables updated",
+    "thanks for the readback; noise floor consistent",
+    "copy that; your node came through clean",
+    "acknowledged; packet clarity verified",
+    "mesh check confirmed; appreciate the assist",
+    "reply captured; horizon scan matches your reading",
+    "thanks; your reception report aligns with local data",
+    "confirmation received; static profile unchanged",
+    "copy; your node's response strengthens the sample",
+    "acknowledged; timestamp sync looks good",
+    "mesh reply detected; calibration complete",
+    "thanks for the return signal; no anomalies found",
+    "response accepted; carrier tone steady",
+    "copy; your verification closes the loop",
+    "ack: your node's reading added to dataset",
+    "reply received; background hum matches expected values",
+    "thanks; your check-in confirms regional stability",
+    "acknowledged; uplink and downlink both consistent",
+    "mesh response logged; test cycle validated",
+    "copy; your signal helps complete the weekly scan",
 ])
 
 SCHEDULED_ACK_KEYWORDS = (
     " ack ", " acknowledged ", " acknowledgement ", " copy ", " good copy ",
     " roger ", " heard ", " heard you ", " loud and clear ", " clear copy ",
     " radio check ", " test ", " testing ", " got you ", " got it ", " 5x5 ",
+)
+
+PROFANITY_PATTERNS = (
+    r"\bfuck(?:ing|ed|er|ers)?\b",
+    r"\bshit(?:ty|ting|ted)?\b",
+    r"\bbitch(?:es|y)?\b",
+    r"\bdamn\b",
+    r"\bcrap\b",
+    r"\bhell\b",
+    r"\bwtf\b",
+    r"\bstfu\b",
+    r"\basshole\b",
+    r"\bdick\b",
 )
 
 
@@ -1686,22 +1824,45 @@ def _looks_like_scheduled_ack(text):
     return any(token in low for token in SCHEDULED_ACK_KEYWORDS)
 
 
-def _random_scheduled_test_time(base_dt):
-    earliest = base_dt + timedelta(days=SCHEDULED_TEST_MIN_DAYS)
-    latest = base_dt + timedelta(days=SCHEDULED_TEST_MAX_DAYS)
+def _looks_profane(text):
+    low = text.lower().strip()
+    return any(re.search(pattern, low) for pattern in PROFANITY_PATTERNS)
+
+
+def _week_key(value):
+    iso = value.isocalendar()
+    return f"{iso.year}-W{iso.week:02d}"
+
+
+def _week_key_from_str(value):
+    try:
+        dt = datetime.fromisoformat(value)
+    except Exception:
+        return ""
+    return _week_key(dt)
+
+
+def _next_iso_week(iso_year, iso_week):
+    next_monday = dt_date.fromisocalendar(iso_year, iso_week, 1) + timedelta(days=7)
+    iso = next_monday.isocalendar()
+    return iso.year, iso.week
+
+
+def _random_scheduled_test_time(iso_year, iso_week, earliest=None):
+    earliest = earliest or datetime.now()
     windows = []
-    day = earliest.date()
-    while day <= latest.date():
+    monday = dt_date.fromisocalendar(iso_year, iso_week, 1)
+    for day_offset in range(7):
+        day = monday + timedelta(days=day_offset)
         day_start = datetime.combine(day, dt_time(hour=SCHEDULED_TEST_START_HOUR))
-        day_end = datetime.combine(day, dt_time(hour=SCHEDULED_TEST_END_HOUR))
+        day_end = datetime.combine(day, dt_time(hour=SCHEDULED_TEST_END_HOUR, minute=59, second=59))
         valid_start = max(day_start, earliest)
-        valid_end = min(day_end, latest)
+        valid_end = day_end
         if valid_start <= valid_end:
             windows.append((valid_start, valid_end))
-        day += timedelta(days=1)
 
     if not windows:
-        return latest
+        return None
 
     start_dt, end_dt = random.choice(windows)
     start_ts = int(start_dt.timestamp())
@@ -1709,6 +1870,33 @@ def _random_scheduled_test_time(base_dt):
     if end_ts <= start_ts:
         return start_dt
     return datetime.fromtimestamp(random.randint(start_ts, end_ts))
+
+
+def _scheduled_weekly_message(now):
+    iso_week = now.isocalendar().week
+    idx = min(max(iso_week, 1), len(CANNED_SCHEDULED_TEST)) - 1
+    return CANNED_SCHEDULED_TEST[idx]
+
+
+def _thanksgiving_date(year):
+    november_first = dt_date(year, 11, 1)
+    offset = (3 - november_first.weekday()) % 7
+    first_thursday = november_first + timedelta(days=offset)
+    return first_thursday + timedelta(days=21)
+
+
+def _holiday_send_info(now):
+    today = now.date()
+    year = today.year
+    if today == dt_date(year, 1, 1):
+        return "new_year", datetime(year, 1, 1, 0, 0, 0)
+    if today == dt_date(year, 10, 31):
+        return "halloween", datetime(year, 10, 31, SCHEDULED_TEST_HOLIDAY_HOUR, 0, 0)
+    if today == _thanksgiving_date(year):
+        return "thanksgiving", datetime(year, 11, today.day, SCHEDULED_TEST_HOLIDAY_HOUR, 0, 0)
+    if today == dt_date(year, 12, 25):
+        return "christmas", datetime(year, 12, 25, SCHEDULED_TEST_HOLIDAY_HOUR, 0, 0)
+    return None, None
 
 
 # ==== AI FUNCTION ====
@@ -1764,10 +1952,13 @@ class GroqMeshBot:
     def _load_scheduled_test_state(self):
         state = {
             "next_send_at": "",
+            "next_weekly_key": "",
             "last_sent_at": "",
+            "last_weekly_key": "",
             "awaiting_ack": False,
             "ack_deadline": "",
             "last_test_text": "",
+            "sent_holiday_keys": [],
         }
         try:
             with open(_SCHEDULED_TEST_FILE) as f:
@@ -1775,13 +1966,23 @@ class GroqMeshBot:
             if isinstance(loaded, dict):
                 state.update({
                     "next_send_at": str(loaded.get("next_send_at", "")),
+                    "next_weekly_key": str(loaded.get("next_weekly_key", "")),
                     "last_sent_at": str(loaded.get("last_sent_at", "")),
+                    "last_weekly_key": str(loaded.get("last_weekly_key", "")),
                     "awaiting_ack": bool(loaded.get("awaiting_ack", False)),
                     "ack_deadline": str(loaded.get("ack_deadline", "")),
                     "last_test_text": str(loaded.get("last_test_text", ""))[:255],
+                    "sent_holiday_keys": [
+                        str(item) for item in loaded.get("sent_holiday_keys", [])
+                        if str(item)
+                    ][:16],
                 })
         except Exception:
             pass
+        if state["next_send_at"] and not state["next_weekly_key"]:
+            state["next_weekly_key"] = _week_key_from_str(state["next_send_at"])
+        if state["last_sent_at"] and not state["last_weekly_key"]:
+            state["last_weekly_key"] = _week_key_from_str(state["last_sent_at"])
         return state
 
     def _save_scheduled_test_state(self):
@@ -1793,12 +1994,44 @@ class GroqMeshBot:
         except Exception as e:
             print(f"[SCHED] state save error: {e}")
 
-    def _schedule_next_test(self, base_dt):
-        next_dt = _random_scheduled_test_time(base_dt)
+    def _schedule_next_test(self, now=None):
+        now = now or datetime.now()
+        current_week = now.isocalendar()
+        current_week_key = _week_key(now)
+        with self._scheduled_test_lock:
+            last_weekly_key = str(self._scheduled_test_state.get("last_weekly_key", ""))
+            next_send = self._dt_from_str(self._scheduled_test_state.get("next_send_at"))
+            next_weekly_key = str(self._scheduled_test_state.get("next_weekly_key", ""))
+
+        if next_send and not next_weekly_key:
+            next_weekly_key = _week_key(next_send)
+
+        if next_send and next_weekly_key and now < next_send:
+            if not next_weekly_key:
+                with self._scheduled_test_lock:
+                    self._scheduled_test_state["next_weekly_key"] = _week_key(next_send)
+                self._save_scheduled_test_state()
+            return next_send
+
+        if last_weekly_key != current_week_key:
+            target_year, target_week = current_week.year, current_week.week
+            next_dt = _random_scheduled_test_time(target_year, target_week, earliest=now)
+        else:
+            target_year, target_week = _next_iso_week(current_week.year, current_week.week)
+            next_dt = _random_scheduled_test_time(target_year, target_week)
+
+        if next_dt is None:
+            target_year, target_week = _next_iso_week(current_week.year, current_week.week)
+            next_dt = _random_scheduled_test_time(target_year, target_week)
+
         with self._scheduled_test_lock:
             self._scheduled_test_state["next_send_at"] = self._dt_to_str(next_dt)
+            self._scheduled_test_state["next_weekly_key"] = _week_key(next_dt)
         self._save_scheduled_test_state()
-        print(f"[SCHED] Next mesh test scheduled for {next_dt.isoformat(sep=' ')}")
+        print(
+            f"[SCHED] Next weekly mesh test scheduled for {next_dt.isoformat(sep=' ')} "
+            f"({_week_key(next_dt)})"
+        )
         return next_dt
 
     def _maybe_expire_pending_ack(self, now=None):
@@ -1814,11 +2047,7 @@ class GroqMeshBot:
         if changed:
             self._save_scheduled_test_state()
 
-    def _send_scheduled_test(self, now=None):
-        now = now or datetime.now()
-        msg = random.choice(CANNED_SCHEDULED_TEST)
-        self._send_open_mesh_message(msg, peer_label="scheduled test")
-        print(f"[SCHED] Sent scheduled mesh test: {msg}")
+    def _mark_scheduled_send(self, msg, now):
         with self._scheduled_test_lock:
             self._scheduled_test_state["last_sent_at"] = self._dt_to_str(now)
             self._scheduled_test_state["last_test_text"] = msg
@@ -1826,24 +2055,59 @@ class GroqMeshBot:
             self._scheduled_test_state["ack_deadline"] = self._dt_to_str(
                 now + timedelta(minutes=SCHEDULED_TEST_ACK_WINDOW_MIN)
             )
+
+    def _send_scheduled_test(self, now=None):
+        now = now or datetime.now()
+        week_key = _week_key(now)
+        msg = _scheduled_weekly_message(now)
+        self._send_open_mesh_message(msg, peer_label="scheduled weekly test")
+        print(f"[SCHED] Sent weekly mesh test ({week_key}): {msg}")
+        with self._scheduled_test_lock:
+            self._scheduled_test_state["last_weekly_key"] = week_key
+            self._scheduled_test_state["next_send_at"] = ""
+            self._scheduled_test_state["next_weekly_key"] = ""
+        self._mark_scheduled_send(msg, now)
         self._schedule_next_test(now)
         self._save_scheduled_test_state()
 
+    def _maybe_send_holiday_test(self, now=None):
+        now = now or datetime.now()
+        holiday_name, send_at = _holiday_send_info(now)
+        if not holiday_name or send_at is None or now < send_at:
+            return False
+
+        holiday_key = f"{now.year}-{holiday_name}"
+        with self._scheduled_test_lock:
+            sent_holiday_keys = set(self._scheduled_test_state.get("sent_holiday_keys", []))
+        if holiday_key in sent_holiday_keys:
+            return False
+
+        msg = random.choice(CANNED_HOLIDAY_TESTS[holiday_name])
+        self._send_open_mesh_message(msg, peer_label=f"{holiday_name} test")
+        print(f"[SCHED] Sent holiday mesh test ({holiday_key}): {msg}")
+        with self._scheduled_test_lock:
+            sent_holiday_keys.add(holiday_key)
+            self._scheduled_test_state["sent_holiday_keys"] = sorted(sent_holiday_keys)[-16:]
+        self._mark_scheduled_send(msg, now)
+        self._save_scheduled_test_state()
+        return True
+
     def _scheduled_test_thread(self):
-        print("[SCHED] Open-mesh check-in enabled (local time window 08:00-20:00)")
+        print("[SCHED] Weekly open-mesh check-ins enabled (one per ISO week + holiday overrides)")
         while True:
             if not self.interface:
                 time.sleep(SCHEDULED_TEST_POLL_S)
                 continue
             now = datetime.now()
             self._maybe_expire_pending_ack(now)
+            self._schedule_next_test(now)
+            try:
+                self._maybe_send_holiday_test(now)
+            except Exception as e:
+                print(f"[SCHED] holiday send error: {e}")
             with self._scheduled_test_lock:
                 next_send = self._dt_from_str(self._scheduled_test_state.get("next_send_at"))
-                last_sent = self._dt_from_str(self._scheduled_test_state.get("last_sent_at"))
-            if next_send is None:
-                self._schedule_next_test(last_sent or now)
-                continue
-            if now >= next_send:
+            if next_send is not None and now >= next_send:
                 try:
                     self._send_scheduled_test(now)
                 except Exception as e:
@@ -2107,6 +2371,7 @@ class GroqMeshBot:
 
         Daily limit controlled by BROADCAST_DAILY_MAX (0 = silent, 1-3 = active).
         ~10% chance of a random cryptic reply regardless of keyword category.
+        Profanity matches also route into the cryptic pool to keep the tone mysterious.
         """
         if self._maybe_send_scheduled_ack_thanks(text, from_node):
             return
@@ -2125,8 +2390,8 @@ class GroqMeshBot:
         # 10% chance of a cryptic symbol reply regardless of keyword match
         if random.random() < 0.10:
             reply = random.choice(CANNED_CRYPTIC)
-        elif any(k in low for k in ("fuck", "shit", "bitch", "damn", "ass", "crap", "hell", "wtf", "stfu")):
-            reply = random.choice(CANNED_CURSE)
+        elif _looks_profane(text):
+            reply = random.choice(CANNED_CRYPTIC)
         elif any(k in low for k in ("flight", "airline", "flying", "plane", "altitude", "aboard", "onboard", "aircraft", "landing", "takeoff", "wifi")):
             reply = random.choice(CANNED_FLIGHT)
         elif any(k in low for k in ("test", "testing", "check", "radio check", "qso", "copy")):

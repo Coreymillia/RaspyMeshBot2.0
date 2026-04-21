@@ -1,12 +1,13 @@
 # Meshtastic PiAgent
 ## Key Features
 
-- 🤖 **MeshBot for Meshtastic** — Groq-powered DM replies plus a lively open-mesh personality with canned greetings, test acknowledgments, cryptic replies, and scheduled check-ins
+- 🤖 **MeshBot for Meshtastic** — rule-based open-mesh bot with canned greetings, test acknowledgments, cryptic replies, and scheduled weekly/holiday check-ins
+- 🧠 **Optional Groq DM AI** — private-message AI replies are available if you add a Groq API key, but they are not required for the core meshbot
 - 📡 **Multi-mode boot selector** on Waveshare LCD HAT
 - 🛜 **Pi.Alert network monitoring** with ARP, new device, and WiFi anomaly detection
 - 🧱 **Pi-hole DNS analytics** with query stats and spike detection
 - 📬 **Mesh-based alerting** — sends anomaly alerts via Meshtastic DM
-- 📻 **Scheduled open-mesh check-ins** — optional random test broadcasts between 8am and 8pm local time, at least 3 days apart
+- 📻 **Scheduled open-mesh check-ins** — optional weekly test broadcasts plus holiday overrides
 - 🌡️ **Telemetry monitor** — watches a Meshtastic sensor node (BME680 or similar) and DMs you when temperature or humidity thresholds are crossed
 - 📺 **CYD companion display** — ESP32 "Cheap Yellow Display" shows bot DM replies full-screen with a PuTTY-style multi-color terminal palette; touch to navigate messages; auto-jumps to newest on arrival
 - 🖥 **Live LCD dashboard** with Pi.Alert views, matrix rain, NWS forecast, and TX/RX message history
@@ -15,7 +16,7 @@
 - 🔁 **ARP baseline reset** — long-press the CYD display to re-anchor the ARP monitor after network changes
 - 🌐 **IP forward management** — persistent `ip_forward` setting survives reboots; MITM and RaspyJack auto-manage it
 
-A Raspberry Pi Zero 2 W project centered around a **Meshtastic meshbot** with Groq-powered DM replies, an active open-mesh personality, and a **3-mode boot selector** on a Waveshare 1.44" LCD HAT.
+A Raspberry Pi Zero 2 W project centered around a **Meshtastic meshbot** with a rule-based open-mesh personality, optional Groq DM AI, and a **3-mode boot selector** on a Waveshare 1.44" LCD HAT.
 
 Boot the Pi, pick your mode on the screen with a button press. Press the **joystick** at any time to open the built-in **web settings portal** — no SSH or manual config file editing needed.
 
@@ -64,7 +65,7 @@ They are no longer the center of the project, but they stay in the repo for peop
 
 | Key | Mode | What it does |
 |-----|------|-------------|
-| KEY1 | **MeshBot** | DM AI bot + open-mesh canned replies with live status screen |
+| KEY1 | **MeshBot** | Rule-based open-mesh bot with optional DM AI and a live status screen |
 | KEY2 | **RaspyJack** | Security toolkit (separate install — see below) |
 | KEY3 | **Pi.Alert Multi-View** | Live network security dashboard + Pi-hole + Matrix + NWS forecast + message log |
 | Joystick ↑ | **Bettercap** | Passive network recon — maps every device on your LAN + web dashboard at `:8082` |
@@ -76,30 +77,33 @@ The boot selector waits indefinitely — nothing launches until you press a butt
 
 ## What MeshBot Does
 
-**Direct messages (DMs):** Anyone on the mesh who sends a private message to this node gets a real AI-generated reply powered by **Groq LLaMA 3.1**. The reply is sent back as a DM.
+**Open mesh bot (core behavior):** The main bot is fully rule-based and runs locally. It listens to public mesh traffic and replies with short canned responses so it stays fast, RF-friendly, and useful even with **no Groq key at all**.
 
-**Open channel:** The bot also listens to public mesh traffic, but this side is **not Groq-powered**. Open-mesh replies are all **local canned responses** so they stay fast, short, and radio-friendly. The daily broadcast limit is configurable from **0 to 3 replies per 24 hours** (default 3) — set to 0 to go completely silent on the open channel. It responds to:
+**Optional DM AI:** If you add a Groq API key, anyone on the mesh who sends a private message to this node gets a Groq-powered DM reply. If you leave Groq unset, the open-mesh bot still works normally; only the DM AI portion is unavailable.
+
+**Open channel:** Open-mesh replies are all **local canned responses**. The daily broadcast limit is configurable from **0 to 3 replies per 24 hours** (default 3) — set to 0 to go completely silent on the open channel. It responds to:
 - `test`, `testing`, `check`, `radio check`, `qso`, `copy` → acknowledges the test from your configured city/state
 - `hello`, `hi`, `hey`, `howdy`, `hola`, `good morning`, `good evening`, etc. → sends a friendly greeting back so the channel does not feel empty
 - `who`, `what`, `bot`, `anyone`, `robot`, `human`, `alive`, etc. → explains what the node is
 - `flight`, `airline`, `flying`, `altitude`, `wifi`, etc. → airborne-specific reply
-- Profanity → dramatic self-destruct humour reply
+- Profanity / rough language → mysterious cryptic RF-style reply
 - Everything else → short generic acknowledgments from your configured city/state
 - **10% chance on any message** → random cryptic symbol/hex reply regardless of keywords (current live setting)
 
 ### Scheduled open-mesh check-ins
 
-If `scheduled_test_enabled` is turned on, the bot also schedules its own random open-mesh test message:
+If `scheduled_test_enabled` is turned on, the bot also schedules its own open-mesh test messages:
 
 - Uses the Pi's **local timezone** (for Colorado, `America/Denver` is ideal)
-- Picks a random send time between **8:00 AM and 8:00 PM**
-- Enforces at least **3 days** between messages
-- Chooses the next send time randomly within a **3 to 7 day** window
+- Sends **one weekly test per ISO calendar week**
+- Uses a **week-of-year message list** so the scheduled test text advances in order through the year
+- Schedules the weekly test at a random time between **8:00 AM and 8:00 PM** inside the active week
+- Sends special **holiday test messages** on **New Year (midnight), Halloween, Thanksgiving, and Christmas**
 - If someone replies with words like `ack`, `copy`, `heard`, or `test` within the acknowledgment window, the bot sends a short thank-you back on the open mesh
 
 You can disable this any time in the **Settings Portal → Meshtastic** section. That same section also lets you change the city/state label used in canned open-mesh replies, scheduled tests, and manual test transmissions.
 
-There are dozens of canned replies across multiple categories so responses do not feel repetitive, even without much local mesh traffic.
+There are now well over a hundred canned replies across multiple categories, so responses do not feel repetitive even without much local mesh traffic.
 
 **LCD display (KEY1 mode):**
 - Shows a live status screen: node ID, peer count, DM count, last sender, time since last message, message preview, AI status
@@ -400,7 +404,7 @@ pip install -r requirements.txt
 
 **Option A — Web Settings Portal (recommended)**
 
-After installing the service files (step 6) and rebooting, press the **joystick** on the HAT at the boot screen. The LCD shows `http://[ip]:8080`. Open that URL from any phone or laptop on your network and fill in all your keys and URLs, including the city/state label used in canned open-mesh replies. Save — done.
+After installing the service files (step 6) and rebooting, press the **joystick** on the HAT at the boot screen. The LCD shows `http://[ip]:8080`. Open that URL from any phone or laptop on your network and fill in whatever settings you want, including the city/state label used in canned open-mesh replies. Groq is optional. Save — done.
 
 **Option B — Edit config.json manually**
 
@@ -430,6 +434,8 @@ Fill in:
 ```
 
 > Set `"enable_bot": false` to run **Pi.Alert + Pi-hole monitor only** — no Groq API key or Meshtastic radio required. Anomaly alerts are logged to console instead of sent via mesh DM.
+
+> Leave `groq_api_key` empty if you want a **rule-based meshbot only**. The open-mesh bot, weekly/holiday scheduled tests, manual test sender, and local canned replies still work without Groq.
 
 Get a free Groq key at https://console.groq.com.
 

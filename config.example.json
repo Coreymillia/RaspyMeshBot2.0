@@ -11,7 +11,7 @@
     "alert_node": ["!your_primary_node_id", "!your_secondary_node_id"],
     "broadcast_daily_max": 3,
     "_broadcast_daily_max_comment": "0=silent, 1-3 open-channel replies per day. Also adjustable with KEY1 button on the HAT.",
-    "_scheduled_test_enabled_comment": "When true, send a random open-mesh test between 8am and 8pm local time, at least 3 days apart, and reply with a short thank-you if someone acknowledges it.",
+    "_scheduled_test_enabled_comment": "When true, send one scheduled open-mesh test per ISO week with week-of-year placeholder text, plus holiday tests for New Year, Halloween, Thanksgiving, and Christmas, and reply with a short thank-you if someone acknowledges it.",
     "scheduled_test_enabled": false,
     "_serial_port_comment": "Optional — remove this and 'serial_port' to auto-detect. T-190 = /dev/ttyACM0, Heltec Wireless Paper = /dev/ttyUSB0",
     "serial_port": "/dev/ttyACM0",

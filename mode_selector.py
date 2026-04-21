@@ -150,10 +150,10 @@ button{{margin-top:24px;width:100%;padding:12px;background:#0a6;color:#fff;borde
     <label>Canned Reply State</label>
     <input type="text" name="canned_reply_state" value="{v('canned_reply_state', 'Colorado')}">
     <div class="hint">Example: Colorado &mdash; leave the bot code alone and update the location here instead</div>
-    <div class="row">
-    <input type="checkbox" name="scheduled_test_enabled" value="true" {scheduled_test_checked}>
-    <span style="font-size:13px">Enable scheduled open-mesh test check-ins</span></div>
-<div class="hint">Sends a random open-mesh test between 8am and 8pm local time, at least 3 days apart, and says thanks if it hears an acknowledgment</div>
+<div class="row">
+<input type="checkbox" name="scheduled_test_enabled" value="true" {scheduled_test_checked}>
+<span style="font-size:13px">Enable scheduled open-mesh test check-ins</span></div>
+<div class="hint">Sends one scheduled open-mesh test per ISO week, uses week-of-year placeholder messages, sends holiday tests on New Year, Halloween, Thanksgiving, and Christmas, and says thanks if it hears an acknowledgment</div>
 </div>
 <div class="sec"><h3>Pi.Alert</h3>
 <label>Base URL</label>
