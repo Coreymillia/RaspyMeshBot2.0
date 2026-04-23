@@ -2100,11 +2100,6 @@ class GroqMeshBot:
                 continue
             now = datetime.now()
             self._maybe_expire_pending_ack(now)
-            self._schedule_next_test(now)
-            try:
-                self._maybe_send_holiday_test(now)
-            except Exception as e:
-                print(f"[SCHED] holiday send error: {e}")
             with self._scheduled_test_lock:
                 next_send = self._dt_from_str(self._scheduled_test_state.get("next_send_at"))
             if next_send is not None and now >= next_send:
@@ -2112,6 +2107,14 @@ class GroqMeshBot:
                     self._send_scheduled_test(now)
                 except Exception as e:
                     print(f"[SCHED] send error: {e}")
+                time.sleep(SCHEDULED_TEST_POLL_S)
+                continue
+            if next_send is None:
+                self._schedule_next_test(now)
+            try:
+                self._maybe_send_holiday_test(now)
+            except Exception as e:
+                print(f"[SCHED] holiday send error: {e}")
             time.sleep(SCHEDULED_TEST_POLL_S)
 
     def _maybe_send_scheduled_ack_thanks(self, text, from_node):
