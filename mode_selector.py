@@ -106,6 +106,10 @@ def _settings_html(cfg):
             val = ', '.join(val)
         return str(val).replace('"', '&quot;').replace('<', '&lt;').replace('>', '&gt;')
 
+    def secret_status(k, label):
+        return f"{label} saved; leave blank to keep current value, enter !clear to remove." \
+            if str(cfg.get(k, '')).strip() else f"No {label.lower()} saved."
+
     bot_checked = 'checked' if cfg.get('enable_bot', True) else ''
     ip_fwd_checked = 'checked' if cfg.get('ip_forward_persistent', False) else ''
     scheduled_test_checked = 'checked' if cfg.get('scheduled_test_enabled', False) else ''
@@ -127,8 +131,8 @@ button{{margin-top:24px;width:100%;padding:12px;background:#0a6;color:#fff;borde
 <form method="POST" action="/save">
 <div class="sec"><h3>Groq AI</h3>
 <label>API Key</label>
-<input type="password" name="groq_api_key" value="{v('groq_api_key')}">
-<div class="hint">From console.groq.com &mdash; leave blank to disable AI replies</div>
+<input type="password" name="groq_api_key" value="">
+<div class="hint">From console.groq.com &mdash; {secret_status('groq_api_key', 'API key')}</div>
 <div class="row">
 <input type="checkbox" name="enable_bot" value="true" {bot_checked}>
 <span style="font-size:13px">Enable Mesh Bot (Groq AI + Meshtastic)</span></div>
@@ -160,7 +164,8 @@ button{{margin-top:24px;width:100%;padding:12px;background:#0a6;color:#fff;borde
 <input type="text" name="pialert_base_url" value="{v('pialert_base_url')}">
 <div class="hint">e.g. http://192.168.0.103/pialert/api/</div>
 <label>API Key</label>
-<input type="password" name="pialert_api_key" value="{v('pialert_api_key')}">
+<input type="password" name="pialert_api_key" value="">
+<div class="hint">{secret_status('pialert_api_key', 'API key')}</div>
 </div>
 <div class="sec"><h3>NWS Forecast</h3>
 <label>Latitude</label>
@@ -174,6 +179,9 @@ button{{margin-top:24px;width:100%;padding:12px;background:#0a6;color:#fff;borde
 <label>Base URL</label>
 <input type="text" name="pihole_base_url" value="{v('pihole_base_url')}">
 <div class="hint">e.g. http://192.168.0.103/api &mdash; leave blank to disable</div>
+<label>Admin Password</label>
+<input type="password" name="pihole_password" value="">
+<div class="hint">Required for Pi-hole v6 session auth. {secret_status('pihole_password', 'Admin password')}</div>
 <label>DNS Spike Threshold</label>
 <input type="text" name="dns_spike_threshold" value="{v('dns_spike_threshold', '300')}">
 <div class="hint">Queries per poll that trigger an alert (300 = 5 q/s sustained)</div>
@@ -282,20 +290,27 @@ def launch_settings_portal(lcd):
                 vals = params.get(key, [default])
                 return unquote_plus(vals[0]) if vals else default
 
+            def update_secret(cfg, key):
+                raw = get(key)
+                if raw == '':
+                    return
+                cfg[key] = '' if raw.strip() == '!clear' else raw
+
             try:
                 with open(_CONFIG_PATH) as f:
                     cfg = json.load(f)
             except Exception:
                 cfg = {}
 
-            cfg['groq_api_key']      = get('groq_api_key')
+            update_secret(cfg, 'groq_api_key')
             cfg['pialert_base_url']  = get('pialert_base_url')
-            cfg['pialert_api_key']   = get('pialert_api_key')
+            update_secret(cfg, 'pialert_api_key')
             cfg['nws_latitude']      = get('nws_latitude').strip()
             cfg['nws_longitude']     = get('nws_longitude').strip()
             cfg['canned_reply_city'] = get('canned_reply_city').strip() or 'Victor'
             cfg['canned_reply_state'] = get('canned_reply_state').strip() or 'Colorado'
             cfg['pihole_base_url']   = get('pihole_base_url')
+            update_secret(cfg, 'pihole_password')
             cfg['enable_bot']        = (get('enable_bot') == 'true')
             cfg['scheduled_test_enabled'] = (get('scheduled_test_enabled') == 'true')
             sp = get('serial_port').strip()

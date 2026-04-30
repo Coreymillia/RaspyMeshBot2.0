@@ -250,7 +250,7 @@ Toggle **Persistent IP Forwarding** in the **Settings Portal → Network** secti
 
 ## Pi-hole Integration (View 5)
 
-If you run [Pi-hole v6](https://pi-hole.net/) on your network, the bot can display live DNS stats and alert you to unusual query spikes — **no API key required**.
+If you run [Pi-hole v6](https://pi-hole.net/) on your network, the bot can display live DNS stats and alert you to unusual query spikes — **no API key required**. Pi-hole v6 access uses your local admin password to obtain a session token from `/api/auth`.
 
 ### What's on the Pi-hole view
 
@@ -270,6 +270,7 @@ Add to `config.json` (or use the Settings Portal):
 ```json
 {
     "pihole_base_url": "http://YOUR_PIHOLE_IP/api",
+    "pihole_password": "YOUR_PIHOLE_ADMIN_PASSWORD_HERE",
     "dns_spike_threshold": 300
 }
 ```
@@ -404,7 +405,7 @@ pip install -r requirements.txt
 
 **Option A — Web Settings Portal (recommended)**
 
-After installing the service files (step 6) and rebooting, press the **joystick** on the HAT at the boot screen. The LCD shows `http://[ip]:8080`. Open that URL from any phone or laptop on your network and fill in whatever settings you want, including the city/state label used in canned open-mesh replies. Groq is optional. Save — done.
+After installing the service files (step 6) and rebooting, press the **joystick** on the HAT at the boot screen. The LCD shows `http://[ip]:8080`. Open that URL from any phone or laptop on your network and fill in whatever settings you want, including the city/state label used in canned open-mesh replies. Groq is optional. Secret fields are intentionally blank when the page loads; leave them blank to keep the current saved value, or enter `!clear` to remove one. Save — done.
 
 **Option B — Edit config.json manually**
 
@@ -424,6 +425,7 @@ Fill in:
     "canned_reply_state": "Colorado",
     "alert_node": ["!your_node_id"],
     "pihole_base_url": "http://YOUR_PIHOLE_IP/api",
+    "pihole_password": "YOUR_PIHOLE_ADMIN_PASSWORD_HERE",
     "enable_bot": true,
     "scheduled_test_enabled": false,
     "telemetry_monitor_node": "!sensor_node_id",
