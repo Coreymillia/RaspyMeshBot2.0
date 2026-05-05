@@ -11,6 +11,9 @@ Mode 3 button layout (HAT buttons, active LOW):
   KEY1 (BCM 21): cycle Mode 3 views
   KEY2 (BCM 20): jump back to Pi.Alert dashboard
   KEY3 (BCM 16): toggle backlight
+
+ Live settings portal:
+   http://<pi-ip>:8080
 """
 
 from pubsub import pub
@@ -34,16 +37,90 @@ if not hasattr(pub, "_original_sendMessage"):
     pub._original_sendMessage = pub.sendMessage
     pub.sendMessage = safe_sendMessage
 
-import time, sys, os, threading, random, textwrap, re
+import time, sys, os, threading, random, textwrap, re, html
 import meshtastic
 import meshtastic.serial_interface
 import requests
 from PIL import Image, ImageDraw, ImageFont
 import collections
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.parse import parse_qs
 
 # ==== CONFIG ====
 import json as _json
+
+_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
+
+BUILTIN_CHATBOT_PRESETS = {
+    "meshtastic": (
+        "You are Meshtastic, a concise Raspberry Pi mesh radio bot. "
+        "Keep replies practical, friendly, and radio-aware. "
+        "For public open-mesh replies, stay very short and RF-friendly. "
+        "For private DMs, you can be a little more conversational, but still concise. "
+        "Prefer plain language, no markdown, and no long monologues."
+    ),
+}
+
+
+def _cfg():
+    try:
+        with open(_CONFIG_PATH) as _f:
+            return _json.load(_f)
+    except Exception:
+        return {}
+
+
+def _save_cfg(data):
+    with open(_CONFIG_PATH, 'w') as _f:
+        _json.dump(data, _f, indent=4)
+        _f.write('\n')
+
+
+def _normalize_custom_presets(raw):
+    presets = {}
+    if not isinstance(raw, dict):
+        return presets
+    for name, prompt in raw.items():
+        clean_name = str(name).strip()[:32]
+        clean_prompt = str(prompt).strip()
+        if clean_name and clean_prompt:
+            presets[clean_name] = clean_prompt
+    return dict(sorted(presets.items(), key=lambda item: item[0].lower()))
+
+
+def _sanitize_positive_int(value, default, minimum=0, maximum=9999):
+    try:
+        parsed = int(str(value).strip())
+    except Exception:
+        return default
+    return max(minimum, min(parsed, maximum))
+
+
+def _resolve_personality_prompt(cfg=None):
+    cfg = cfg or _cfg()
+    custom = _normalize_custom_presets(cfg.get('chatbot_custom_presets', {}))
+    selected = str(cfg.get('chatbot_personality_preset', 'meshtastic')).strip() or 'meshtastic'
+    manual = str(cfg.get('chatbot_personality_prompt', '')).strip()
+
+    if selected == 'meshtastic':
+        return BUILTIN_CHATBOT_PRESETS['meshtastic']
+    if selected.startswith('custom:'):
+        custom_name = selected.split(':', 1)[1].strip()
+        if custom_name in custom:
+            return custom[custom_name]
+    return manual or BUILTIN_CHATBOT_PRESETS['meshtastic']
+
+
+def _active_personality_label(cfg=None):
+    cfg = cfg or _cfg()
+    selected = str(cfg.get('chatbot_personality_preset', 'meshtastic')).strip() or 'meshtastic'
+    if selected == 'meshtastic':
+        return "Meshtastic"
+    if selected.startswith('custom:'):
+        name = selected.split(':', 1)[1].strip()
+        return name[:14] if name else "Custom"
+    return "Manual"
+
 
 def _load_api_key():
     """Load Groq API key from env var or config.json (never hard-code keys)."""
@@ -51,9 +128,8 @@ def _load_api_key():
     key = _os.environ.get('GROQ_API_KEY', '')
     if key:
         return key
-    cfg = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'config.json')
     try:
-        with open(cfg) as _f:
+        with open(_CONFIG_PATH) as _f:
             return _json.load(_f)['groq_api_key']
     except Exception:
         return ''
@@ -62,15 +138,6 @@ GROQ_API_KEY     = _load_api_key()
 MODEL            = "llama-3.1-8b-instant"
 MAX_MESH_MSG_LEN = 200
 
-# Pi.Alert integration — edit config.json to set these
-def _cfg():
-    cfg = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
-    try:
-        with open(cfg) as _f:
-            return _json.load(_f)
-    except Exception:
-        return {}
-
 _c = _cfg()
 PIALERT_BASE_URL   = _c.get('pialert_base_url', 'http://192.168.0.103/pialert/api/')
 PIALERT_API_KEY    = _c.get('pialert_api_key', '')
@@ -78,7 +145,13 @@ PIALERT_POLL_S     = 60    # seconds between Pi.Alert polls
 _alert_raw  = _c.get('alert_node', '!changeme')
 ALERT_NODES = _alert_raw if isinstance(_alert_raw, list) else [_alert_raw]
 SERIAL_PORT        = _c.get('serial_port', None)   # None = auto-detect
-BROADCAST_DAILY_MAX = _c.get('broadcast_daily_max', 3)  # 0=silent, 1-3 broadcast replies/day
+BROADCAST_DAILY_MAX = _sanitize_positive_int(_c.get('broadcast_daily_max', 3), 3)
+OPEN_MESH_REPLY_MODE = str(_c.get('open_mesh_reply_mode', 'canned')).strip().lower()
+if OPEN_MESH_REPLY_MODE not in ('canned', 'groq'):
+    OPEN_MESH_REPLY_MODE = 'canned'
+CHATBOT_CUSTOM_PRESETS = _normalize_custom_presets(_c.get('chatbot_custom_presets', {}))
+CHATBOT_PERSONALITY_PRESET = str(_c.get('chatbot_personality_preset', 'meshtastic')).strip() or 'meshtastic'
+CHATBOT_PERSONALITY_PROMPT = _resolve_personality_prompt(_c)
 
 # Pi-hole integration — v6 requires password auth (POST /api/auth → session sid)
 PIHOLE_BASE_URL       = _c.get('pihole_base_url', '')   # e.g. 'http://192.168.0.103:8080/api'
@@ -321,9 +394,13 @@ _nws_lock      = threading.Lock()
 # Mesh TX/RX history
 _MSG_HISTORY_MAX   = 30
 _msg_history       = collections.deque(maxlen=_MSG_HISTORY_MAX)
+_dm_msg_history    = collections.deque(maxlen=_MSG_HISTORY_MAX)
+_open_msg_history  = collections.deque(maxlen=_MSG_HISTORY_MAX)
 _msg_history_lock  = threading.Lock()
 _msg_selected_idx  = 0
 _msg_scroll_offset = 0
+_DM_LOG_FILE       = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.meshbot_dm_log.jsonl')
+_OPEN_LOG_FILE     = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.meshbot_open_log.jsonl')
 
 # Manual test sender state
 _manual_test_selected_idx = 0
@@ -389,6 +466,279 @@ def _start_cyd_server():
             print(f"[CYD] Server error: {exc}")
     t = threading.Thread(target=_run, daemon=True, name="cyd-server")
     t.start()
+
+
+_SETTINGS_PORT = 8080
+
+
+def _settings_local_url():
+    try:
+        sockmod = __import__('socket')
+        sock = sockmod.socket(sockmod.AF_INET, sockmod.SOCK_DGRAM)
+        sock.connect(("8.8.8.8", 80))
+        host = sock.getsockname()[0]
+        sock.close()
+    except Exception:
+        host = "raspberrypi.local"
+    return f"http://{host}:{_SETTINGS_PORT}"
+
+
+def _escape_html(value):
+    return html.escape(str(value), quote=True)
+
+
+def _schedule_process_restart(delay_s=1.0):
+    def _restart():
+        time.sleep(delay_s)
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+
+    threading.Thread(target=_restart, daemon=True, name="meshbot-restart").start()
+
+
+def _settings_html(cfg, status_message=""):
+    custom_presets = _normalize_custom_presets(cfg.get('chatbot_custom_presets', {}))
+    selected_preset = str(cfg.get('chatbot_personality_preset', 'meshtastic')).strip() or 'meshtastic'
+    prompt_value = str(cfg.get('chatbot_personality_prompt', '')).strip() or _resolve_personality_prompt(cfg)
+    open_mesh_mode = str(cfg.get('open_mesh_reply_mode', OPEN_MESH_REPLY_MODE)).strip().lower()
+    if open_mesh_mode not in ('canned', 'groq'):
+        open_mesh_mode = 'canned'
+    broadcast_daily_max = _sanitize_positive_int(cfg.get('broadcast_daily_max', BROADCAST_DAILY_MAX), BROADCAST_DAILY_MAX)
+
+    preset_options = [
+        ('meshtastic', 'Meshtastic (built-in)'),
+        ('__manual__', 'Manual prompt'),
+    ]
+    preset_options.extend((f"custom:{name}", f"{name} (saved)") for name in custom_presets)
+    preset_prompts = {
+        'meshtastic': BUILTIN_CHATBOT_PRESETS['meshtastic'],
+        '__manual__': prompt_value,
+    }
+    preset_prompts.update({f"custom:{name}": prompt for name, prompt in custom_presets.items()})
+    preset_markup = "\n".join(
+        f'<option value="{_escape_html(value)}"{" selected" if value == selected_preset else ""}>{_escape_html(label)}</option>'
+        for value, label in preset_options
+    )
+
+    status_block = f'<div class="status">{_escape_html(status_message)}</div>' if status_message else ''
+    checked_enable_bot = 'checked' if bool(cfg.get('enable_bot', ENABLE_BOT)) else ''
+    checked_scheduled_tests = 'checked' if bool(cfg.get('scheduled_test_enabled', SCHEDULED_TEST_ENABLED)) else ''
+
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MeshBot Settings</title>
+  <style>
+    body {{ background:#0d1117; color:#e6edf3; font-family:Arial,sans-serif; margin:0; }}
+    .wrap {{ max-width:860px; margin:0 auto; padding:20px; }}
+    h1,h2 {{ margin:0 0 12px; }}
+    .sub {{ color:#8b949e; margin:6px 0 18px; }}
+    .status {{ background:#10324a; border:1px solid #1f6feb; color:#d2e8ff; padding:10px 12px; border-radius:10px; margin-bottom:16px; }}
+    .grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:12px; margin-bottom:16px; }}
+    .card, form {{ background:#161b22; border:1px solid #30363d; border-radius:12px; padding:16px; }}
+    label {{ display:block; font-size:14px; font-weight:700; margin:0 0 6px; }}
+    input[type=text], input[type=password], input[type=number], textarea, select {{
+      width:100%; box-sizing:border-box; background:#0d1117; color:#e6edf3; border:1px solid #30363d;
+      border-radius:8px; padding:10px; margin:0 0 12px;
+    }}
+    textarea {{ min-height:130px; resize:vertical; }}
+    .row {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:12px; }}
+    .checks {{ display:flex; gap:16px; flex-wrap:wrap; margin:0 0 12px; }}
+    .checks label {{ display:flex; align-items:center; gap:8px; font-weight:400; margin:0; }}
+    button {{ background:#238636; color:#fff; border:0; border-radius:8px; padding:11px 16px; font-weight:700; cursor:pointer; }}
+    code {{ color:#79c0ff; }}
+    .muted {{ color:#8b949e; font-size:13px; margin-top:-6px; margin-bottom:12px; }}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>MeshBot Settings</h1>
+    <p class="sub">Always-on settings portal for the live Meshtastic bot runtime at <code>{_escape_html(_settings_local_url())}</code>.</p>
+    {status_block}
+    <div class="grid">
+      <div class="card">
+        <h2>Runtime</h2>
+        <div class="sub">Open mesh: <strong>{_escape_html(open_mesh_mode)}</strong><br>Daily open-mesh replies: <strong>{broadcast_daily_max}</strong><br>Active personality: <strong>{_escape_html(_active_personality_label(cfg))}</strong></div>
+      </div>
+      <div class="card">
+        <h2>Logs</h2>
+        <div class="sub">Private DM log: <code>{_escape_html(os.path.basename(_DM_LOG_FILE))}</code><br>Open mesh log: <code>{_escape_html(os.path.basename(_OPEN_LOG_FILE))}</code></div>
+      </div>
+    </div>
+    <form method="post" action="/">
+      <div class="row">
+        <div>
+          <label for="groq_api_key">Groq API Key</label>
+          <input id="groq_api_key" name="groq_api_key" type="password" value="{_escape_html(cfg.get('groq_api_key', ''))}">
+        </div>
+        <div>
+          <label for="serial_port">Meshtastic Serial Port</label>
+          <input id="serial_port" name="serial_port" type="text" value="{_escape_html(cfg.get('serial_port', SERIAL_PORT or ''))}" placeholder="/dev/ttyACM0">
+        </div>
+      </div>
+
+      <div class="row">
+        <div>
+          <label for="open_mesh_reply_mode">Open Mesh Reply Mode</label>
+          <select id="open_mesh_reply_mode" name="open_mesh_reply_mode">
+            <option value="canned"{' selected' if open_mesh_mode == 'canned' else ''}>Canned replies</option>
+            <option value="groq"{' selected' if open_mesh_mode == 'groq' else ''}>Groq chatbot replies</option>
+          </select>
+        </div>
+        <div>
+          <label for="broadcast_daily_max">Open Mesh Daily Reply Limit</label>
+          <input id="broadcast_daily_max" name="broadcast_daily_max" type="number" min="0" max="9999" value="{broadcast_daily_max}">
+          <div class="muted">0 keeps the bot silent on open mesh.</div>
+        </div>
+      </div>
+
+      <div class="row">
+        <div>
+          <label for="canned_reply_city">Canned Reply City</label>
+          <input id="canned_reply_city" name="canned_reply_city" type="text" value="{_escape_html(cfg.get('canned_reply_city', CANNED_REPLY_CITY))}">
+        </div>
+        <div>
+          <label for="canned_reply_state">Canned Reply State</label>
+          <input id="canned_reply_state" name="canned_reply_state" type="text" value="{_escape_html(cfg.get('canned_reply_state', CANNED_REPLY_STATE))}">
+        </div>
+      </div>
+
+      <div class="checks">
+        <label><input type="checkbox" name="enable_bot" value="1" {checked_enable_bot}> Enable Meshtastic bot runtime</label>
+        <label><input type="checkbox" name="scheduled_test_enabled" value="1" {checked_scheduled_tests}> Enable scheduled open-mesh tests</label>
+        <label><input type="checkbox" name="restart_after_save" value="1" checked> Restart MeshBot after save</label>
+      </div>
+
+      <h2>Chatbot Personality</h2>
+      <div class="row">
+        <div>
+          <label for="chatbot_personality_preset">Active Personality</label>
+          <select id="chatbot_personality_preset" name="chatbot_personality_preset">
+            {preset_markup}
+          </select>
+        </div>
+        <div>
+          <label for="save_preset_name">Save Current Prompt As Preset</label>
+          <input id="save_preset_name" name="save_preset_name" type="text" value="" maxlength="32" placeholder="e.g. Field Ops">
+          <div class="muted">Leave blank to keep this as the current built-in/manual/custom prompt.</div>
+        </div>
+      </div>
+
+      <label for="chatbot_personality_prompt">Personality Prompt</label>
+      <textarea id="chatbot_personality_prompt" name="chatbot_personality_prompt">{_escape_html(prompt_value)}</textarea>
+      <div class="muted">This prompt is used for both private DMs and Groq-powered open-mesh replies.</div>
+
+      <button type="submit">Save Settings</button>
+    </form>
+  </div>
+  <script>
+    const presetPrompts = {_json.dumps(preset_prompts)};
+    const presetSelect = document.getElementById('chatbot_personality_preset');
+    const promptField = document.getElementById('chatbot_personality_prompt');
+    if (presetSelect && promptField) {{
+      presetSelect.addEventListener('change', () => {{
+        if (Object.prototype.hasOwnProperty.call(presetPrompts, presetSelect.value)) {{
+          promptField.value = presetPrompts[presetSelect.value];
+        }}
+      }});
+    }}
+  </script>
+</body>
+</html>"""
+
+
+class _SettingsHandler(BaseHTTPRequestHandler):
+    def _send_html(self, body, status=200):
+        encoded = body.encode('utf-8')
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
+
+    def do_GET(self):
+        if self.path not in ('/', '/index.html'):
+            self.send_response(404)
+            self.end_headers()
+            return
+        self._send_html(_settings_html(_cfg()))
+
+    def do_POST(self):
+        if self.path not in ('/', '/index.html'):
+            self.send_response(404)
+            self.end_headers()
+            return
+
+        length = int(self.headers.get('Content-Length', '0') or '0')
+        raw_body = self.rfile.read(length).decode('utf-8', errors='replace')
+        form = {key: values[-1] for key, values in parse_qs(raw_body, keep_blank_values=True).items()}
+
+        cfg = _cfg()
+        cfg['groq_api_key'] = str(form.get('groq_api_key', '')).strip()
+        serial_port = str(form.get('serial_port', '')).strip()
+        if serial_port:
+            cfg['serial_port'] = serial_port
+        else:
+            cfg.pop('serial_port', None)
+        cfg['enable_bot'] = 'enable_bot' in form
+        cfg['scheduled_test_enabled'] = 'scheduled_test_enabled' in form
+        cfg['canned_reply_city'] = str(form.get('canned_reply_city', CANNED_REPLY_CITY)).strip() or 'Victor'
+        cfg['canned_reply_state'] = str(form.get('canned_reply_state', CANNED_REPLY_STATE)).strip() or 'Colorado'
+
+        reply_mode = str(form.get('open_mesh_reply_mode', 'canned')).strip().lower()
+        cfg['open_mesh_reply_mode'] = reply_mode if reply_mode in ('canned', 'groq') else 'canned'
+        cfg['broadcast_daily_max'] = _sanitize_positive_int(
+            form.get('broadcast_daily_max', BROADCAST_DAILY_MAX),
+            BROADCAST_DAILY_MAX,
+        )
+
+        custom_presets = _normalize_custom_presets(cfg.get('chatbot_custom_presets', {}))
+        selected_preset = str(form.get('chatbot_personality_preset', 'meshtastic')).strip() or 'meshtastic'
+        prompt = str(form.get('chatbot_personality_prompt', '')).strip()
+        if not prompt:
+            prompt = BUILTIN_CHATBOT_PRESETS['meshtastic']
+        save_name = str(form.get('save_preset_name', '')).strip()[:32]
+
+        if save_name:
+            custom_presets[save_name] = prompt
+            selected_preset = f"custom:{save_name}"
+        elif selected_preset.startswith('custom:'):
+            selected_name = selected_preset.split(':', 1)[1].strip()
+            if selected_name and selected_name in custom_presets:
+                custom_presets[selected_name] = prompt
+        elif selected_preset == 'meshtastic' and prompt != BUILTIN_CHATBOT_PRESETS['meshtastic']:
+            selected_preset = '__manual__'
+
+        cfg['chatbot_custom_presets'] = custom_presets
+        cfg['chatbot_personality_preset'] = selected_preset
+        cfg['chatbot_personality_prompt'] = prompt
+        _save_cfg(cfg)
+
+        restart_requested = 'restart_after_save' in form
+        status_message = "Settings saved."
+        if cfg['open_mesh_reply_mode'] == 'groq' and not cfg.get('groq_api_key', '').strip() and 'GROQ_API_KEY' not in os.environ:
+            status_message += " Groq open-mesh replies still need an API key."
+        if restart_requested:
+            status_message += " Restarting MeshBot..."
+        self._send_html(_settings_html(cfg, status_message))
+        if restart_requested:
+            _schedule_process_restart()
+
+    def log_message(self, fmt, *args):
+        pass
+
+
+def _start_settings_server():
+    def _run():
+        try:
+            srv = HTTPServer(("0.0.0.0", _SETTINGS_PORT), _SettingsHandler)
+            print(f"[SETTINGS] HTTP server on port {_SETTINGS_PORT}")
+            srv.serve_forever()
+        except Exception as exc:
+            print(f"[SETTINGS] Server error: {exc}")
+
+    threading.Thread(target=_run, daemon=True, name="meshbot-settings").start()
 
 
 def _load_seen_anomalies():
@@ -494,10 +844,20 @@ def _log_mesh_message(direction, msg_kind, peer, text):
     }
     with _msg_history_lock:
         _msg_history.appendleft(entry)
+        if msg_kind == "dm":
+            _dm_msg_history.appendleft(entry)
+        else:
+            _open_msg_history.appendleft(entry)
         if _msg_selected_idx == 0:
             _msg_scroll_offset = 0
         else:
             _msg_selected_idx = min(_msg_selected_idx + 1, max(0, len(_msg_history) - 1))
+    log_path = _DM_LOG_FILE if msg_kind == "dm" else _OPEN_LOG_FILE
+    try:
+        with open(log_path, 'a') as f:
+            f.write(_json.dumps(entry) + "\n")
+    except Exception as exc:
+        print(f"[LOG] write error ({os.path.basename(log_path)}): {exc}")
 
 
 def _message_snapshot():
@@ -682,10 +1042,11 @@ def _draw_display(status="booting", node_id="", peer_count=0,
              (255, 180,   0) if ai_status == 'busy'  else (200, 80, 80)
     draw.text((2, y), "AI:", font=F8, fill=(120, 120, 120))
     draw.text((22, y), ai_status, font=F8, fill=ai_col)
-    # Show broadcast limit on same row, right side
-    bcast_label = f"BC:{BROADCAST_DAILY_MAX}/d"
-    bcast_col   = (80, 80, 80) if BROADCAST_DAILY_MAX == 0 else (100, 180, 255)
-    draw.text((80, y), bcast_label, font=F8, fill=bcast_col)
+    open_label = "GROQ" if OPEN_MESH_REPLY_MODE == "groq" else "CANNED"
+    draw.text((54, y), f"OM:{open_label[:6]}", font=F7,
+              fill=(160, 220, 255) if OPEN_MESH_REPLY_MODE == "groq" else (120, 120, 120))
+    bcast_col = (80, 80, 80) if BROADCAST_DAILY_MAX == 0 else (100, 180, 255)
+    draw.text((98, y), f"{BROADCAST_DAILY_MAX}/d", font=F7, fill=bcast_col)
     y += 11
 
     draw.line([(0, y), (128, y)], fill=(50, 50, 50)); y += 3
@@ -702,7 +1063,7 @@ def _draw_display(status="booting", node_id="", peer_count=0,
             telem_parts.append(f"{_telem_lux:.0f}lx")
         draw.text((72, y), " ".join(telem_parts), font=F8, fill=(100, 200, 255))
     else:
-        draw.text((72, y), "KEY3:backlight", font=F8, fill=(40, 40, 40))
+        draw.text((58, y), _active_personality_label()[:12], font=F7, fill=(70, 120, 160))
 
     with _lcd_lock:
         _lcd.LCD_ShowImage(img, 0, 0)
@@ -1829,6 +2190,25 @@ def _looks_profane(text):
     return any(re.search(pattern, low) for pattern in PROFANITY_PATTERNS)
 
 
+def _classify_open_mesh_message(text):
+    low = text.lower()
+    greeting_reply = _pick_greeting_reply(text)
+
+    if random.random() < 0.10:
+        return "cryptic", random.choice(CANNED_CRYPTIC)
+    if _looks_profane(text):
+        return "cryptic", random.choice(CANNED_CRYPTIC)
+    if any(k in low for k in ("flight", "airline", "flying", "plane", "altitude", "aboard", "onboard", "aircraft", "landing", "takeoff", "wifi")):
+        return "flight", random.choice(CANNED_FLIGHT)
+    if any(k in low for k in ("test", "testing", "check", "radio check", "qso", "copy")):
+        return "test", random.choice(CANNED_TEST)
+    if greeting_reply:
+        return "greeting", greeting_reply
+    if any(k in low for k in ("who", "what", "bot", "anyone", "anybody", "there", "robot", "machine", "human", "real", "alive", "automated")):
+        return "identity", random.choice(CANNED_IDENT)
+    return "generic", random.choice(CANNED_GENERIC)
+
+
 def _week_key(value):
     iso = value.isocalendar()
     return f"{iso.year}-W{iso.week:02d}"
@@ -1900,18 +2280,59 @@ def _holiday_send_info(now):
 
 
 # ==== AI FUNCTION ====
-def query_groq(prompt):
+def _compact_mesh_text(text, limit):
+    cleaned = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[:max(1, limit - 1)].rstrip() + "…"
+
+
+def _build_groq_messages(prompt, channel="dm", sender_label="", category="generic"):
+    system_prompt = CHATBOT_PERSONALITY_PROMPT or BUILTIN_CHATBOT_PRESETS['meshtastic']
+    if channel == "open":
+        system_prompt = (
+            f"{system_prompt}\n"
+            f"You are replying on the public Meshtastic open mesh from {_canned_location()}. "
+            "Keep replies RF-friendly, direct, and short. "
+            "Use one sentence when possible, never use markdown, and avoid emojis."
+        )
+        user_prompt = (
+            f"Open-mesh message from {sender_label or 'unknown'}.\n"
+            f"Category hint: {category}.\n"
+            f"Incoming message: {prompt}\n"
+            "Reply with a short public radio-friendly response."
+        )
+    else:
+        system_prompt = (
+            f"{system_prompt}\n"
+            "You are replying over Meshtastic private DM. "
+            "Be helpful and concise, usually one to three short sentences."
+        )
+        user_prompt = (
+            f"Private message from {sender_label or 'unknown'}.\n"
+            f"Incoming message: {prompt}"
+        )
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+
+
+def query_groq(prompt, channel="dm", sender_label="", category="generic"):
+    if not GROQ_API_KEY:
+        return "AI offline (Missing API key)"
     try:
         headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
         data = {
             "model": MODEL,
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": 100,
+            "messages": _build_groq_messages(prompt, channel=channel, sender_label=sender_label, category=category),
+            "max_tokens": 60 if channel == "open" else 120,
         }
         r = requests.post("https://api.groq.com/openai/v1/chat/completions",
                           headers=headers, json=data, timeout=15)
         r.raise_for_status()
-        return r.json()["choices"][0]["message"]["content"].strip()
+        content = r.json()["choices"][0]["message"]["content"].strip()
+        return _compact_mesh_text(content, 110 if channel == "open" else 360)
     except Exception as e:
         print(f"Warning: AI error: {e}")
         return f"AI offline ({type(e).__name__})"
@@ -2277,7 +2698,7 @@ class GroqMeshBot:
             if not MODE3_ACTIVE:
                 self.update_display(status='ai_busy')
 
-            ai_reply = query_groq(text)
+            ai_reply = query_groq(text, channel="dm", sender_label=sender_label)
             print(f"AI reply: {ai_reply}")
 
             self.ai_status = "ready"
@@ -2370,11 +2791,11 @@ class GroqMeshBot:
         return False
 
     def _handle_broadcast(self, text, from_node):
-        """Reply to open-channel messages with canned responses.
+        """Reply to open-channel messages with canned or Groq short replies.
 
-        Daily limit controlled by BROADCAST_DAILY_MAX (0 = silent, 1-3 = active).
-        ~10% chance of a random cryptic reply regardless of keyword category.
-        Profanity matches also route into the cryptic pool to keep the tone mysterious.
+        Daily limit controlled by BROADCAST_DAILY_MAX (0 = silent).
+        The local canned classifier remains the baseline and Groq mode falls back to it
+        if the API is unavailable.
         """
         if self._maybe_send_scheduled_ack_thanks(text, from_node):
             return
@@ -2387,29 +2808,19 @@ class GroqMeshBot:
             print(f"Broadcast limit ({BROADCAST_DAILY_MAX}/day), skipping: '{text}'")
             return
 
-        low = text.lower()
-        greeting_reply = _pick_greeting_reply(text)
-
-        # 10% chance of a cryptic symbol reply regardless of keyword match
-        if random.random() < 0.10:
-            reply = random.choice(CANNED_CRYPTIC)
-        elif _looks_profane(text):
-            reply = random.choice(CANNED_CRYPTIC)
-        elif any(k in low for k in ("flight", "airline", "flying", "plane", "altitude", "aboard", "onboard", "aircraft", "landing", "takeoff", "wifi")):
-            reply = random.choice(CANNED_FLIGHT)
-        elif any(k in low for k in ("test", "testing", "check", "radio check", "qso", "copy")):
-            reply = random.choice(CANNED_TEST)
-        elif greeting_reply:
-            reply = greeting_reply
-        elif any(k in low for k in ("who", "what", "bot", "anyone", "anybody", "there", "robot", "machine", "human", "real", "alive", "automated")):
-            reply = random.choice(CANNED_IDENT)
+        sender_label = _node_label(self.interface, from_node)
+        category, canned_reply = _classify_open_mesh_message(text)
+        if OPEN_MESH_REPLY_MODE == "groq":
+            reply = query_groq(text, channel="open", sender_label=sender_label, category=category)
+            if not reply or reply.startswith("AI offline"):
+                reply = canned_reply
         else:
-            reply = random.choice(CANNED_GENERIC)
+            reply = canned_reply
 
         self.broadcast_count += 1
         print(f"Broadcast reply ({self.broadcast_count}/{BROADCAST_DAILY_MAX} today): {reply}")
         try:
-            self._send_open_mesh_message(reply, peer_label=_node_label(self.interface, from_node))
+            self._send_open_mesh_message(reply, peer_label=sender_label)
         except Exception as e:
             print(f"Broadcast send error: {e}")
 
@@ -2471,11 +2882,7 @@ class GroqMeshBot:
                         print(f"[BTN] KEY1: view -> {_current_view}")
 
                     if k1 and not key1_was_low and not MODE3_ACTIVE:
-                        # Cycle broadcast daily limit: 0 → 1 → 2 → 3 → 0
-                        global BROADCAST_DAILY_MAX
-                        BROADCAST_DAILY_MAX = (BROADCAST_DAILY_MAX + 1) % 4
-                        self.broadcast_count = 0  # reset today's count when limit changes
-                        print(f"[BTN] KEY1: broadcast limit -> {BROADCAST_DAILY_MAX}/day")
+                        print(f"[BTN] KEY1: settings portal {_settings_local_url()}")
                         self.update_display(status='ok')
 
                     if k2 and not key2_was_low and MODE3_ACTIVE:
@@ -2542,5 +2949,6 @@ class GroqMeshBot:
 # ==== MAIN ====
 if __name__ == "__main__":
     _start_cyd_server()
+    _start_settings_server()
     bot = GroqMeshBot()
     bot.run()

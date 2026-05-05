@@ -1,9 +1,12 @@
 # Meshtastic PiAgent
 ## Key Features
 
-- 🤖 **MeshBot for Meshtastic** — rule-based open-mesh bot with canned greetings, test acknowledgments, cryptic replies, and scheduled weekly/holiday check-ins
-- 🧠 **Optional Groq DM AI** — private-message AI replies are available if you add a Groq API key, but they are not required for the core meshbot
-- 📡 **Multi-mode boot selector** on Waveshare LCD HAT
+- 🤖 **Always-on MeshBot for Meshtastic** — the recommended runtime is `meshbot.service`, running directly on the Waveshare HAT without needing the old boot selector
+- 🧠 **Groq chatbot with personality control** — private DMs use the active Meshtastic/manual/custom personality prompt, and open-mesh replies can optionally use short Groq responses too
+- 🎭 **Built-in Meshtastic preset + named custom presets** — keep the default radio-friendly bot voice, write your own prompt, and save custom presets by name from the browser UI
+- ⚙ **Runtime settings portal at `:8080`** — configure Groq, open-mesh mode, typed reply limit, canned reply location, and chatbot personality from any browser while the bot is running
+- 📓 **Separate DM and open-mesh logs** — private and public traffic are kept separate in memory and on disk for easier review/debugging
+- 📡 **Optional legacy boot selector** on Waveshare LCD HAT
 - 🛜 **Pi.Alert network monitoring** with ARP, new device, and WiFi anomaly detection
 - 🧱 **Pi-hole DNS analytics** with query stats and spike detection
 - 📬 **Mesh-based alerting** — sends anomaly alerts via Meshtastic DM
@@ -16,9 +19,9 @@
 - 🔁 **ARP baseline reset** — long-press the CYD display to re-anchor the ARP monitor after network changes
 - 🌐 **IP forward management** — persistent `ip_forward` setting survives reboots; MITM and RaspyJack auto-manage it
 
-A Raspberry Pi Zero 2 W project centered around a **Meshtastic meshbot** with a rule-based open-mesh personality, optional Groq DM AI, and a **3-mode boot selector** on a Waveshare 1.44" LCD HAT.
+A Raspberry Pi Zero 2 W project centered around an **always-on Meshtastic meshbot** with configurable personality, optional Groq replies for both DMs and the open mesh, Pi.Alert/Pi-hole monitoring, and a Waveshare 1.44" LCD HAT UI.
 
-Boot the Pi, pick your mode on the screen with a button press. Press the **joystick** at any time to open the built-in **web settings portal** — no SSH or manual config file editing needed.
+The current recommended setup is simple: boot the Pi, let `meshbot.service` start, and open **`http://[pi-ip]:8080`** from any device on your LAN. The older boot selector is still in the repo for multi-mode experiments, but it is no longer the main product path.
 
 ---
 
@@ -73,15 +76,22 @@ They are no longer the center of the project, but they stay in the repo for peop
 
 The boot selector waits indefinitely — nothing launches until you press a button.
 
+If you want the same behavior as the live `.233` build, skip the boot selector entirely and just run `meshbot.service` as the default runtime.
+
 ---
 
 ## What MeshBot Does
 
-**Open mesh bot (core behavior):** The main bot is fully rule-based and runs locally. It listens to public mesh traffic and replies with short canned responses so it stays fast, RF-friendly, and useful even with **no Groq key at all**.
+**Open mesh bot (core behavior):** The main bot can run in two styles:
 
-**Optional DM AI:** If you add a Groq API key, anyone on the mesh who sends a private message to this node gets a Groq-powered DM reply. If you leave Groq unset, the open-mesh bot still works normally; only the DM AI portion is unavailable.
+- **Canned mode** — fully local, rule-based, fast, and useful even with **no Groq key at all**
+- **Groq mode** — uses the active personality prompt, but still keeps public replies short and RF-friendly; if Groq fails, the bot falls back to the canned reply bank automatically
 
-**Open channel:** Open-mesh replies are all **local canned responses**. The daily broadcast limit is configurable from **0 to 3 replies per 24 hours** (default 3) — set to 0 to go completely silent on the open channel. It responds to:
+**Optional DM AI:** If you add a Groq API key, anyone on the mesh who sends a private message to this node gets a Groq-powered reply using the currently selected chatbot personality. If you leave Groq unset, the open-mesh bot still works normally; only the AI portion is unavailable.
+
+**Personality presets:** The bot now ships with a built-in **Meshtastic** preset, supports a freeform manual prompt, and lets you save named custom presets directly from the runtime settings portal at `:8080`.
+
+**Open channel:** The daily broadcast limit is configurable as **0 or any positive number of replies per 24 hours** (default 3) — set to 0 to go completely silent on the open channel. In canned mode it responds to:
 - `test`, `testing`, `check`, `radio check`, `qso`, `copy` → acknowledges the test from your configured city/state
 - `hello`, `hi`, `hey`, `howdy`, `hola`, `good morning`, `good evening`, etc. → sends a friendly greeting back so the channel does not feel empty
 - `who`, `what`, `bot`, `anyone`, `robot`, `human`, `alive`, etc. → explains what the node is
@@ -89,6 +99,11 @@ The boot selector waits indefinitely — nothing launches until you press a butt
 - Profanity / rough language → mysterious cryptic RF-style reply
 - Everything else → short generic acknowledgments from your configured city/state
 - **10% chance on any message** → random cryptic symbol/hex reply regardless of keywords (current live setting)
+
+**Chat logging:** The runtime keeps separate message history and JSONL logs for:
+
+- private DMs: `.meshbot_dm_log.jsonl`
+- open mesh: `.meshbot_open_log.jsonl`
 
 ### Scheduled open-mesh check-ins
 
@@ -106,9 +121,8 @@ You can disable this any time in the **Settings Portal → Meshtastic** section.
 There are now well over a hundred canned replies across multiple categories, so responses do not feel repetitive even without much local mesh traffic.
 
 **LCD display (KEY1 mode):**
-- Shows a live status screen: node ID, peer count, DM count, last sender, time since last message, message preview, AI status
-- The current broadcast limit (`BC:N/d`) is shown live on the status screen
-- **KEY1** cycles the broadcast daily limit: 0 → 1 → 2 → 3 → 0 (resets today's count each time)
+- Shows a live status screen: node ID, peer count, DM count, last sender, time since last message, message preview, AI status, open-mesh reply mode, and current daily reply limit
+- Shows the active personality label when telemetry is not filling the lower-right status area
 - **KEY3** toggles the backlight
 
 **LCD display (KEY3 mode — Pi.Alert Monitor):**
@@ -405,7 +419,17 @@ pip install -r requirements.txt
 
 **Option A — Web Settings Portal (recommended)**
 
-After installing the service files (step 6) and rebooting, press the **joystick** on the HAT at the boot screen. The LCD shows `http://[ip]:8080`. Open that URL from any phone or laptop on your network and fill in whatever settings you want, including the city/state label used in canned open-mesh replies. Groq is optional. Secret fields are intentionally blank when the page loads; leave them blank to keep the current saved value, or enter `!clear` to remove one. Save — done.
+After installing `meshbot.service` (step 5) and starting or rebooting the Pi, open **`http://[pi-ip]:8080`** from any phone or laptop on your network. The runtime itself serves this page while MeshBot is running.
+
+From there you can configure:
+
+- Groq API key
+- open-mesh reply mode (`canned` or `groq`)
+- typed open-mesh daily reply limit
+- canned reply city/state
+- active chatbot personality
+- named custom personality presets
+- optional restart after save
 
 **Option B — Edit config.json manually**
 
@@ -419,6 +443,11 @@ Fill in:
 ```json
 {
     "groq_api_key": "your_groq_key",
+    "open_mesh_reply_mode": "canned",
+    "broadcast_daily_max": 3,
+    "chatbot_personality_preset": "meshtastic",
+    "chatbot_personality_prompt": "You are Meshtastic, a concise Raspberry Pi mesh radio bot...",
+    "chatbot_custom_presets": {},
     "pialert_base_url": "http://YOUR_PIALERT_IP/pialert/api/",
     "pialert_api_key": "your_pialert_api_key",
     "canned_reply_city": "Victor",
@@ -454,33 +483,37 @@ The bot defaults to `/dev/ttyACM0`. Verify your radio's port:
 ```bash
 ls /dev/ttyACM* /dev/ttyUSB*
 ```
-If different, edit `SERIAL_PORT` near the top of `mesh_groq_ai_bot_oled.py`.
+If different, set `"serial_port"` in `config.json` or in the settings portal.
 
 ### 5. Install the systemd services
 
-These make the bot and boot selector start automatically on every boot.
+Recommended: install **MeshBot only** as the always-on runtime. The old boot selector remains optional for multi-mode experiments.
 
 ```bash
 # MeshBot service — update YOUR_USER to your Linux username in both places
 sudo cp systemd/meshbot.service /etc/systemd/system/
 sudo nano /etc/systemd/system/meshbot.service
 
-# Boot mode selector — runs as root from /root/
-sudo cp systemd/mode-selector.service /etc/systemd/system/
-sudo cp mode_selector.py /root/mode_selector.py
-
 sudo systemctl daemon-reload
 sudo systemctl enable meshbot.service
+sudo systemctl restart meshbot.service
+```
+
+**Optional legacy launcher**
+
+```bash
+sudo cp systemd/mode-selector.service /etc/systemd/system/
+sudo cp mode_selector.py /root/mode_selector.py
 sudo systemctl enable mode-selector.service
 ```
 
-### 6. Reboot
+### 6. Reboot / first launch
 
 ```bash
 sudo reboot
 ```
 
-The mode selector will appear on the LCD on every boot. Press **KEY1**, **KEY2**, or **KEY3** to launch a mode. Press the **joystick** to open the Settings Portal.
+After boot, `meshbot.service` should come up automatically. Open **`http://[pi-ip]:8080`** to finish configuration or change personality/open-mesh settings later.
 
 ---
 
@@ -614,7 +647,7 @@ python3 mesh_groq_ai_bot_oled.py
 touch /tmp/meshbot_screensaver
 python3 mesh_groq_ai_bot_oled.py
 
-# Boot selector (requires root for GPIO)
+# Optional legacy boot selector (requires root for GPIO)
 sudo python3 mode_selector.py
 ```
 
@@ -624,8 +657,8 @@ sudo python3 mode_selector.py
 
 | File | Purpose |
 |------|---------|
-| `mesh_groq_ai_bot_oled.py` | Main bot — Meshtastic listener, Groq AI, Pi.Alert multi-view UI, telemetry monitor, anomaly alerter, and message history |
-| `mode_selector.py` | Boot menu + web settings portal at `:8080` |
+| `mesh_groq_ai_bot_oled.py` | Main bot — Meshtastic listener, Groq AI, runtime settings portal at `:8080`, Pi.Alert multi-view UI, telemetry monitor, anomaly alerter, and message history |
+| `mode_selector.py` | Optional legacy boot menu for the older multi-mode launcher workflow |
 | `LCD_1in44.py` | Waveshare 1.44" LCD SPI driver |
 | `LCD_Config.py` | GPIO/SPI hardware configuration for the LCD |
 | `config.example.json` | Config template — copy to `config.json` and fill in |
@@ -636,6 +669,8 @@ sudo python3 mode_selector.py
 | `CYDBotReplies/` | ESP32 PlatformIO project — CYD companion display (non-inverted panels) |
 | `INVERTEDCYDBotReplies/` | ESP32 PlatformIO project — CYD companion display (inverted panels) |
 | `.seen_anomalies.json` | Auto-generated — persists seen anomaly keys across reboots (do not edit) |
+| `.meshbot_dm_log.jsonl` | Auto-generated — private DM log |
+| `.meshbot_open_log.jsonl` | Auto-generated — open-mesh log |
 
 ---
 
@@ -693,10 +728,12 @@ To reconfigure later, hold the **BOOT** button while powering on.
 
 ## Notes
 
-- The bot runs as your regular user; `mode_selector.py` runs as root (needed for GPIO at boot)
+- The recommended runtime is `meshbot.service`; `mode_selector.py` is now optional/legacy
+- The bot runs as your regular user; `mode_selector.py` only needs root if you still use the legacy boot workflow
 - Matrix rain is optimised for the Pi Zero 2W — uses PIL column draws (~12 FPS) instead of per-pixel math
-- The broadcast daily limit (0–3) is shown live on the LCD as `BC:N/d` and can be cycled on the fly without restarting the service
-- Groq AI replies are capped at 100 tokens to keep mesh messages short
+- The open-mesh daily limit can be any non-negative integer and is shown live on the LCD
+- Groq open-mesh replies are intentionally kept much shorter than DM replies and fall back to the canned classifier if Groq is unavailable
+- DM and open-mesh traffic are logged separately to keep public and private history clean
 - `PYTHONUNBUFFERED=1` is set in the systemd service so log output appears immediately in `meshbot.log`
 - The Pi.Alert poll interval (`PIALERT_POLL_S`) and NWS refresh interval (`NWS_REFRESH_S`) are constants at the top of `mesh_groq_ai_bot_oled.py` and can be tuned freely
 
